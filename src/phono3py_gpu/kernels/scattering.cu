@@ -43,22 +43,43 @@ extern "C" __global__ void collision_reduce(
 extern "C" __global__ void collision_rows(
     double* row, const double* reduced, const long long* triplet_index,
     const signed char* swapped, const double* rotations,
-    int nt, int nb0, int nb, int ni, int nr, int start, int nc) {
+    int nt, int nb0, int nb, int ni, int nr, int start, int nc, int nq) {
     long long index = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    long long size = (long long)nb0*nc*ni*nb*nc;
+    long long size = (long long)nq*nb0*nc*ni*nb*nc;
     if (index >= size) return;
     long long rest = index;
     int c = rest % nc; rest /= nc;
     int j = rest % nb; rest /= nb;
     int i = rest % ni; rest /= ni;
-    int a = rest % nc, b = rest / nc;
+    int a = rest % nc, b = (rest / nc) % nb0;
+    int q = rest / (nc*nb0);
     double value = 0;
     for (int r=0; r<nr; ++r) {
-        long long target = (long long)i*nr+r;
+        long long target = ((long long)q*ni+i)*nr+r;
         long long t = triplet_index[target]-start;
         if (t < 0 || t >= nt) continue;
         long long p = (((long long)swapped[target]*nt+t)*nb0+b)*nb+j;
         value += reduced[p] * (nc == 1 ? 1.0 : rotations[r*9+a*3+c]);
     }
     row[index] += value;
+}
+
+// Each q and initial branch owns its sum; interleaved triplets retain their
+// original order within q. No floating-point atomics are needed.
+extern "C" __global__ void sum_by_q(
+    double* out, const double* values, const long long* multiplicity,
+    const long long* owner, const signed char* normal,
+    int nt, int nb0, int nq, int channels) {
+    int index = blockIdx.x*blockDim.x+threadIdx.x;
+    if (index >= channels*nq*nb0) return;
+    int b = index % nb0, q = (index/nb0) % nq;
+    int channel = index/(nb0*nq);
+    double value = 0;
+    for (int t=0; t<nt; ++t) {
+        if (owner[t] != q) continue;
+        if (channel == 1 && !normal[t]) continue;
+        if (channel == 2 && normal[t]) continue;
+        value += values[(long long)t*nb0+b]*multiplicity[t];
+    }
+    out[index] += value;
 }

@@ -653,7 +653,8 @@ static __device__ double _I_4(void) { return 0.0; }
 // vertices: (triplet, 2, tetrahedron, 4); each work item is one band triple.
 extern "C" __global__ void weights(
     double* out, signed char* zero, const double* freq, const double* f0,
-    const long long* vertices, int nt, int nb0, int nb, int nth, int nc) {
+    const long long* vertices, int nt, int nb0, int nb, int nth, int nc,
+    int frequency_stride) {
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     long long size = (long long)nt*nb0*nb*nb;
     if (idx >= size) return;
@@ -672,7 +673,7 @@ extern "C" __global__ void weights(
                 v[l] = ch==0 ? x+y : (ch==1 ? -x+y : x-y);
             }
             int center = sort_omegas(v);
-            double w = f0[b];
+            double w = f0[t*frequency_stride+b];
             if (w>=v[0] && w<=v[3]) active=true;
             int region = w<v[0] ? 0 : w<v[1] ? 1 : w<v[2] ? 2 : w<v[3] ? 3 : 4;
             total[ch] += _I(region, center, w, v)*_g(region, w, v);

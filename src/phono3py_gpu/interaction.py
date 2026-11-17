@@ -1,5 +1,6 @@
 """Device-resident FC3 Fourier transforms and phonon-mode contractions."""
 
+import os
 from itertools import permutations
 
 import numpy as np
@@ -24,7 +25,10 @@ class InteractionKernel:
         )
         self._fourier = None
         self._tetrahedron = None
-        self.batch_size = batch_size(16 * self.nb**3 * 9, maximum=64)
+        maximum = int(os.environ.get("PHONO3PY_GPU_TRIPLET_BATCH_SIZE", "64"))
+        if maximum < 1:
+            raise ValueError("PHONO3PY_GPU_TRIPLET_BATCH_SIZE must be positive.")
+        self.batch_size = batch_size(16 * self.nb**3 * 9, maximum=maximum)
 
     @property
     def tetrahedron(self):

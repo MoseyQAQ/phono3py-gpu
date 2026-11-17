@@ -306,6 +306,7 @@ class GPUCollisionSolver(LBTECollisionSolver):
                             np.int32(targets.shape[1]),
                             np.int32(start),
                             np.int32(1 if reducible else 3),
+                            np.int32(1),
                         ),
                     )
                 saved.append(host(strength))

@@ -60,16 +60,16 @@ def weights(
 ):
     """Return device (g, g_zero), in the upstream channel and band order."""
     cp = cupy()
+    f0 = cp.asarray(frequency_points)
     nb = frequencies.shape[1]
-    nf = len(frequency_points)
+    nf = f0.shape[-1]
     nc = 3 if collision else 2
     shape = (len(triplets), nf, nb, nb)
-    f0 = cp.asarray(frequency_points)
     tp = cp.asarray(triplets)
     if sigma is not None:
         f1 = frequencies[tp[:, 1]][:, None, :, None]
         f2 = frequencies[tp[:, 2]][:, None, None, :]
-        omega = f0[None, :, None, None]
+        omega = f0[:, :, None, None] if f0.ndim == 2 else f0[None, :, None, None]
         args = (omega - f1 - f2, omega + f1 - f2, omega - f1 + f2)
         terms = [
             cp.exp(-x * x / (2 * sigma * sigma)) / (np.sqrt(2 * np.pi) * sigma)
@@ -106,6 +106,7 @@ def weights(
                 np.int32(nb),
                 np.int32(vertices.shape[2]),
                 np.int32(nc),
+                np.int32(nf if f0.ndim == 2 else 0),
             ),
         )
     if pp.average_degenerate_weights and sigma is None:

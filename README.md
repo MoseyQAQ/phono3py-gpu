@@ -87,7 +87,7 @@ python benchmarks/transport.py --mesh 9 --conventional --lbte
 
 测试数据来自上游测试集：Si、NaCl，以及带已有线宽的 60 支声子 NaMgF₃。CPU 基准使用上游计算器与原始 WTE 公式；仅为较旧 WTE 的单 q 接口增加批量调用适配。测试覆盖两种积分、NAC、相互作用、四种热导率、非零相干项、可约 LBTE、伪逆选项和文件契约。
 
-2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**43 项测试通过**，包括部分能带/全零权重投影、交换声子分支及分批边界的碰撞矩阵逐元素对照。另通过 Ruff 检查与 wheel 打包检查。
+2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**56 项测试通过**，包括部分能带/全零权重投影、交换声子分支及分批边界的碰撞矩阵逐元素对照。另通过 Ruff 检查与 wheel 打包检查。
 
 下表为优化后的完整 calculator 计时，积分方式均为默认四面体。优化前后使用同一节点 `16v100n10` 的单张 V100；CPU 为 5995WX、上游 C 后端、4 线程。Si 常规胞 24 支声子，T=[100, 300, 600] K；每组 CPU/GPU 各运行三次，表中取第三次：
 
@@ -110,6 +110,43 @@ python benchmarks/transport.py --mesh 9 --conventional --lbte
 这些数字只代表所列算例，不是所有材料或网格的性能保证。WTE 的数值对照包含 NaMgF₃ 的非零相干项；上述性能表未对 WTE 宣称加速比。
 
 `benchmarks/transport.py` 在同一节点比较完整 calculator 的墙钟时间，包含设备到 NumPy 的结果复制，不包括 IFC 拟合。首轮和后续轮次都保留，并检查热导率误差。小体系可能因 kernel 启动、传输和 Python 调度而比 CPU 慢；不能从单个 CUDA 内核的速度推断整体加速比。
+
+## 可选的跨 q 批处理
+
+默认仍为逐 q 路径。可以启用实验性的跨 q 批处理，原有 Python/CLI 参数不变：
+
+```bash
+PHONO3PY_GPU_Q_BATCH_SIZE=8 \
+PHONO3PY_GPU_TRIPLET_BATCH_SIZE=256 \
+python your_workflow.py
+```
+
+`PHONO3PY_GPU_Q_BATCH_SIZE` 是每组初始 q 点的数量上限，默认 1；`PHONO3PY_GPU_TRIPLET_BATCH_SIZE` 是每次 interaction kernel 的 triplet 数量上限，默认 64。这两个参数独立控制，后者也可用于逐 q 路径；显存预算会进一步限制实际批量。提高上限可能增加显存使用，不保证每个体系都有收益。
+
+实现将不同初始 q 点的 triplets 交错排列，让同一次 FC3、模式投影、积分权重和线宽 kernel 处理多个 q，并按 q 分别归约。LBTE 的碰撞矩阵行也一起组装。整数网格/对称性信息仍在 CPU 逐 q 准备，最后的全局 LBTE 求解保持原流程。RTA、LBTE 及对应两种 WTE 共用这条路径。
+
+以下选项仍自动使用逐 q GPU 路径：RTA 的 `read_gamma`、完整/平均/读取/写出 pp 和 gamma detail；LBTE 的完整/读取 pp 或逐 q 回调（包括写 pp、写碰撞矩阵）；显式指定 NAC q 方向。`read_collision` 直接复用原来的文件求解流程。RTA 的普通 gamma 输出及回调顺序保留。开启日志时会说明选项导致的回退。
+
+2026-11-17，同节点 `16v100n05`，单张 V100-SXM2 16 GB、CPU 4 线程，Si 9³ 网格、T=[100, 300, 600] K、四面体积分。每种设置预热一次，随后三次完整 calculator 计时取中位数；以下比较均为 **GPU 与 GPU**：
+
+| 算例 | 逐 q、64 triplets / s | 8 q、64 triplets / s | 8 q、256 triplets / s | 两项调整合计加速 |
+|---|---:|---:|---:|---:|
+| Si 原胞，6 支，RTA | 0.4279 | 0.3600 | 0.2477 | 1.73× |
+| Si 常规胞，24 支，RTA | 0.8488 | 0.7926 | 0.7748 | 1.10× |
+| Si 常规胞，24 支，LBTE | 2.0023 | 1.8306 | 1.7672 | 1.13× |
+
+仅跨 q 合并、保持 64 triplets 上限时，三者分别加速 1.19×、1.07×、1.09×。6 支 RTA 的较大收益还有提高 triplet 批量的贡献；单独将逐 q 路径提高到 256 triplets，其耗时已降至 0.2887 s。LBTE 的散射/矩阵行阶段从 0.9177 s 降至 0.7205 s，其他阶段限制了总加速。
+
+实际记录确认每次 kernel 最多包含 8 个不同初始 q。上述所有批量设置相对逐 q 参考的最大归一化差异：κ < 3.3×10⁻¹⁴、γ < 1.4×10⁻¹⁵。测试还覆盖 Gaussian、简并权重平均、部分能带、交换分支、可约碰撞矩阵、分批边界和回调状态。当前数据支持把跨 q 作为可选优化，尚不足以为所有体系选择统一默认批量。
+
+完整 1/2/4/8 q、64/256 triplets 扫描、阶段计时及显存池记录见 [`q-batch-v100.json`](benchmarks/q-batch-v100.json)。显存字段是计算结束时 CuPy 默认池与 FC3 私有池保留的容量，并非整个设备的瞬时峰值。复现：
+
+```bash
+python benchmarks/q_batch.py --mesh 9
+python benchmarks/q_batch.py --mesh 9 --conventional
+python benchmarks/q_batch.py --mesh 9 --conventional --lbte
+# 将上述命令分别追加 --triplet-batch 256 可完成第二组对照。
+```
 
 SAI 环境的单 GPU 测试脚本是 `benchmarks/run-tests.sbatch`，使用仓库内 `.venv`；其他环境应使用自己的调度器参数。
 

@@ -6,6 +6,9 @@ Assembly follows upstream factory.py; public metadata and I/O are inherited.
 
 from __future__ import annotations
 
+import os
+
+import numpy as np
 from phono3py.conductivity.build_components import (
     CalculatorConfig,
     build_lbte_kappa_settings,
@@ -18,6 +21,8 @@ from phono3py.conductivity.kappa_solvers import LBTEKappaSolver
 from phono3py.phonon3.collision_matrix import CollisionMatrix
 from phono3py.phonon3.interaction import Interaction
 
+from phono3py_gpu.backend import batch_size
+from phono3py_gpu.batching import collision_layout, compute_q_batch
 from phono3py_gpu.collision import create_collision_matrix_kernel
 from phono3py_gpu.harmonic import prepare_phonons
 from phono3py_gpu.interaction import InteractionKernel
@@ -45,6 +50,67 @@ class GPUCalculatorMixin:
                 self._velocity_solver.velocity_operator
             )
         return aggregates
+
+    def _iterate_grid_points(self, on_grid_point):
+        """Opt-in q batching; stateful file paths retain upstream iteration."""
+        requested = int(os.environ.get("PHONO3PY_GPU_Q_BATCH_SIZE", "1"))
+        collision = isinstance(self, LBTECalculator)
+        solver = self._collision_solver if collision else self._scattering_solver
+        self.q_batch_stats = dict(q_batches=0, triplet_batches=0, max_q_per_launch=0)
+        solver.q_batch_stats = self.q_batch_stats
+        unsupported = (
+            self._pp.nac_q_direction is not None
+            or (
+                collision
+                and (solver._read_pp or solver._is_full_pp or on_grid_point is not None)
+            )
+            or (
+                not collision
+                and (self._read_gamma or solver._requires_full_gamma_path())
+            )
+        )
+        if requested <= 1 or unsupported:
+            if requested > 1 and self._log_level:
+                print("GPU q batching: using per-q path for the requested options.")
+            return super()._iterate_grid_points(on_grid_point)
+        if collision:
+            _, _, shape, _ = collision_layout(solver)
+            bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
+            requested = batch_size(bytes_per_q, maximum=requested)
+        indices = list(self._get_grid_point_indices())
+        for start in range(0, len(indices), requested):
+            selected = indices[start : start + requested]
+            gps = self._kappa_settings.grid_points[selected]
+            if self._log_level:
+                print("GPU batch: %d q points." % len(gps), flush=True)
+            results = compute_q_batch(solver, gps, collision=collision)
+            self.q_batch_stats["q_batches"] += 1
+            for offset, (index, result) in enumerate(
+                zip(selected, results, strict=True)
+            ):
+                index = int(index)
+                if collision:
+                    self._gamma[:, :, index] = result.gamma
+                    self._kappa_solver.store(index, result)
+                else:
+                    self._store_scattering_result(
+                        index, result["result"], result["gamma_N"], result["gamma_U"]
+                    )
+                    self._gamma_detail_at_q = None
+                    solver._gamma_N, solver._gamma_U = (
+                        result["gamma_N"],
+                        result["gamma_U"],
+                    )
+                    self._pp._triplets_at_q = result["triplets"]
+                    self._pp._weights_at_q = result["weights"]
+                self._grid_point_count = start + offset + 1
+                if self._log_level:
+                    if collision:
+                        self._show_log(index, self._gv[index])
+                    else:
+                        self._show_log(index, self._gv[index], None)
+                if on_grid_point is not None:
+                    on_grid_point(index)
 
 
 class GPURTACalculator(GPUCalculatorMixin, RTACalculator):

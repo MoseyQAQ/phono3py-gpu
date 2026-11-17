@@ -1,0 +1,147 @@
+"""Cross-q weights, collision rows and partial-band contracts."""
+
+from copy import deepcopy
+
+import numpy as np
+import pytest
+from phono3py.phonon3.triplets import get_triplets_integration_weights
+
+from phono3py_gpu.backend import cupy, host
+from phono3py_gpu.batching import compute_q_batch
+from phono3py_gpu.integration import weights
+from phono3py_gpu.interaction import InteractionKernel
+from phono3py_gpu.scattering import GPUCollisionSolver
+
+
+@pytest.mark.parametrize("sigma", [None, 0.1])
+def test_mixed_frequency_points(si, sigma):
+    cp = cupy()
+    ph = deepcopy(si)
+    ph.mesh_numbers = [4, 4, 4]
+    ph.init_phph_interaction(
+        symmetrize_tetrahedra=True, average_degenerate_weights=True
+    )
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    frequencies = pp.phonons.frequencies
+    triplets, expected, expected_zero = [], [], []
+    for gp in [1, 0, 3]:
+        pp.set_grid_point(gp)
+        g, zero = get_triplets_integration_weights(
+            pp,
+            frequencies[gp, [5, 1]],
+            sigma,
+            sigma_cutoff=3.0,
+            is_collision_matrix=True,
+            average_degenerate_weights=True,
+        )
+        triplets.append(pp.get_triplets_at_q()[0])
+        expected.append(g)
+        expected_zero.append(zero)
+    triplets = np.concatenate(triplets)
+    g, zero = weights(
+        pp,
+        triplets,
+        cp.asarray(frequencies),
+        frequencies[triplets[:, 0]][:, [5, 1]],
+        sigma,
+        3.0,
+        collision=True,
+    )
+    np.testing.assert_allclose(
+        host(g), np.concatenate(expected, axis=1), rtol=1e-10, atol=1e-11
+    )
+    np.testing.assert_array_equal(host(zero), np.concatenate(expected_zero))
+
+
+@pytest.mark.parametrize("reducible", [False, True])
+def test_interleaved_collision_rows(si, reducible):
+    from phono3py.phonon3.collision_matrix import CollisionMatrix
+    from phonopy.phonon.grid import get_grid_points_by_rotations
+
+    cp = cupy()
+    ph = deepcopy(si)
+    ph.mesh_numbers = [4, 4, 4]
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    targets = (
+        None
+        if reducible
+        else np.array(
+            [
+                get_grid_points_by_rotations(int(gp), pp.bz_grid, with_surface=False)
+                for gp in pp.bz_grid.grg2bzg
+            ]
+        )
+    )
+    collision = CollisionMatrix(pp, rot_grid_points=targets, lang="C")
+    engine = InteractionKernel(
+        pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
+    )
+    engine.batch_size = 5  # Splits inside q lists and leaves a partial final batch.
+    solver = GPUCollisionSolver(
+        pp,
+        collision,
+        engine=engine,
+        sigmas=[None, 0.1],
+        sigma_cutoff=3.0,
+        temperatures=np.array([0.0, 100.0, 300.0]),
+    )
+    gps = [1, 0, 3]
+    expected = [solver.compute(gp) for gp in gps]
+    strength = pp.interaction_strength.copy()
+    last_triplets = pp.get_triplets_at_q()[0].copy()
+    solver.q_batch_stats = dict(triplet_batches=0, max_q_per_launch=0)
+    results = compute_q_batch(solver, gps, collision=True)
+    assert solver.q_batch_stats["max_q_per_launch"] == 3
+    for actual, reference in zip(results, expected, strict=True):
+        np.testing.assert_allclose(actual.gamma, reference.gamma, rtol=1e-9, atol=1e-13)
+        np.testing.assert_allclose(
+            actual.collision_row, reference.collision_row, rtol=1e-9, atol=1e-13
+        )
+    np.testing.assert_allclose(pp.interaction_strength, strength, rtol=1e-9, atol=1e-25)
+    np.testing.assert_array_equal(pp.get_triplets_at_q()[0], last_triplets)
+
+
+def test_partial_bands_and_callbacks(si, monkeypatch):
+    from phono3py_gpu.factory import GPUCalculatorMixin
+
+    original = GPUCalculatorMixin._iterate_grid_points
+    visited = []
+
+    def iterate(self, callback):
+        def check(index):
+            assert self._pp.get_triplets_at_q()[0][0, 0] == self.grid_points[index]
+            assert self.grid_point_count == len(visited) + 1
+            visited.append(index)
+            if callback is not None:
+                callback(index)
+
+        original(self, check)
+
+    monkeypatch.setattr(GPUCalculatorMixin, "_iterate_grid_points", iterate)
+    results = []
+    for size in (1, 4):
+        visited.clear()
+        monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(size))
+        ph = deepcopy(si)
+        ph.band_indices = [[4, 0, 2]]
+        ph.mesh_numbers = [4, 4, 4]
+        ph.sigmas = [None, 0.1]
+        ph.init_phph_interaction()
+        ph.run_thermal_conductivity(
+            temperatures=[0.0, 100.0, 300.0],
+            transport_type="GPU",
+            is_N_U=True,
+        )
+        results.append(ph.thermal_conductivity)
+        assert len(visited) == len(ph.thermal_conductivity.grid_points)
+    assert results[1].q_batch_stats["max_q_per_launch"] == 4
+    np.testing.assert_allclose(
+        results[1].gamma, results[0].gamma, rtol=1e-9, atol=1e-13
+    )
+    for actual, expected in zip(
+        results[1].get_gamma_N_U(), results[0].get_gamma_N_U(), strict=True
+    ):
+        np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-13)

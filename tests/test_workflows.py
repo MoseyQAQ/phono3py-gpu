@@ -78,7 +78,9 @@ def register_cpu_wte():
     "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
 )
 @pytest.mark.parametrize("sigma", [None, 0.1])
-def test_conductivity(si, lbte, wte, sigma):
+@pytest.mark.parametrize("q_batch", [1, 4])
+def test_conductivity(si, lbte, wte, sigma, q_batch, monkeypatch):
+    monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
     if wte:
         register_cpu_wte()
     results = []
@@ -101,6 +103,8 @@ def test_conductivity(si, lbte, wte, sigma):
         )
         results.append(ph.thermal_conductivity)
     cpu, gpu = results
+    if q_batch > 1:
+        assert gpu.q_batch_stats["max_q_per_launch"] > 1
     np.testing.assert_allclose(gpu.gamma, cpu.gamma, rtol=1e-7, atol=1e-11)
     np.testing.assert_allclose(
         gpu.gamma_isotope, cpu.gamma_isotope, rtol=1e-7, atol=1e-11
@@ -110,6 +114,11 @@ def test_conductivity(si, lbte, wte, sigma):
         np.testing.assert_allclose(
             gpu.collision_eigenvalues, cpu.collision_eigenvalues, rtol=1e-7, atol=1e-9
         )
+    else:
+        for actual, expected in zip(
+            gpu.get_gamma_N_U(), cpu.get_gamma_N_U(), strict=True
+        ):
+            np.testing.assert_allclose(actual, expected, rtol=1e-7, atol=1e-11)
 
 
 def test_wte_nonzero_coherence(tmp_path, monkeypatch):
