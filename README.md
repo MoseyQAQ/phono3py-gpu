@@ -9,7 +9,12 @@ English | [简体中文](README_CN.md)
 
 ## Installation
 
-Requires Python 3.11 or newer, an NVIDIA GPU with a compatible driver, and the CUDA 12 Toolkit. Git and C/C++ compilers are needed to build the dependencies.
+Requirements:
+
+- Python 3.11 or newer
+- An NVIDIA GPU with a compatible driver
+- CUDA 12 Toolkit
+- Git and C/C++ compilers to build the dependencies
 
 Install in a dedicated environment:
 

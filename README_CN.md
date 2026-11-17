@@ -9,7 +9,12 @@
 
 ## 安装
 
-需要 Python 3.11 或更新版本、NVIDIA GPU 及兼容的驱动、CUDA 12 Toolkit。构建依赖还需要 Git 和 C/C++ 编译器。
+环境要求：
+
+- Python 3.11 或更新版本
+- NVIDIA GPU 及兼容的驱动
+- CUDA 12 Toolkit
+- Git 和 C/C++ 编译器，用于构建依赖
 
 建议安装到独立环境：
 
