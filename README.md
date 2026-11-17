@@ -13,7 +13,7 @@ Requirements:
 
 - Python 3.11 or newer
 - An NVIDIA GPU with a compatible driver
-- CUDA 12 Toolkit
+- CUDA Toolkit matching your CuPy installation (11.2–11.8, 12.x, or 13.x)
 - Git and C/C++ compilers to build the dependencies
 
 Install in a dedicated environment:
@@ -23,10 +23,18 @@ git clone https://github.com/MoseyQAQ/phono3py-gpu.git
 cd phono3py-gpu
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install .
+python -m pip install '.[cuda12]'
 ```
 
-The installer selects compatible phono3py and phonopy revisions. See [installation notes](docs/advanced.md#installation-and-compatibility) for environment troubleshooting.
+Choose **one** installation option for your CUDA environment:
+
+| CUDA Toolkit | Install command |
+|---|---|
+| 11.2–11.8 | `python -m pip install '.[cuda11]'` |
+| 12.x | `python -m pip install '.[cuda12]'` |
+| 13.x | `python -m pip install '.[cuda13]'` |
+
+If a compatible CuPy is already installed, use `python -m pip install .` to reuse it. Install only one CuPy package per environment. See [installation notes](docs/advanced.md#installation-and-compatibility) for dependency compatibility and tested configurations.
 
 ## Quick start
 

@@ -9,7 +9,16 @@ import numpy as np
 @lru_cache(maxsize=1)
 def cupy():
     """Return CuPy after checking that an accessible CUDA device exists."""
-    import cupy as cp
+    try:
+        import cupy as cp
+    except ModuleNotFoundError as exc:
+        if exc.name != "cupy":
+            raise
+        raise ModuleNotFoundError(
+            "CuPy is required for GPU calculations. Install phono3py-gpu with "
+            "one of the cuda11, cuda12, or cuda13 extras, or install a matching "
+            "CuPy package separately. See the README installation instructions."
+        ) from exc
 
     if cp.cuda.runtime.getDeviceCount() == 0:
         raise RuntimeError("phono3py-gpu requires a CUDA GPU.")

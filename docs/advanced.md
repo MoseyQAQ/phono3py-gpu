@@ -4,9 +4,13 @@
 
 ## Installation and compatibility
 
-The supported dependency revisions are specified in [pyproject.toml](../pyproject.toml) and installed automatically. Use a dedicated environment and let the installer select these revisions when adding the plugin to an existing workflow.
+The dependencies are specified in [pyproject.toml](../pyproject.toml). The plugin currently requires development revisions of phono3py and phonopy. Phono3py 4.10.0 lacks the grid-point selection and bulk velocity interfaces it uses; phonopy 4.10.0 lacks `phonopy.phonon.velocity_matrix`, which the required phono3py revision imports. Installing the plugin selects the compatible revisions automatically. These pins can be replaced with release lower bounds once both projects publish the required interfaces.
 
-CUDA 12 runtime libraries, including NVRTC, must be available to the Python process. On a cluster, load the appropriate CUDA environment before starting a calculation. Check that CuPy can see your allocated GPUs:
+Select one of the `cuda11`, `cuda12`, or `cuda13` extras to install the matching CuPy wheel. All require CuPy 13.6 or newer; CUDA 11 uses the CuPy 13 series because CuPy 14 dropped CUDA 11 support. A plain installation (`pip install .`) leaves CuPy selection to you, including when using conda. Do not install multiple CuPy distributions in the same environment. See the [CuPy installation guide](https://docs.cupy.dev/en/stable/install.html) and [CuPy 13 guide](https://docs.cupy.dev/en/v13.6.0/install.html).
+
+The GPU test suite has been validated with Python 3.12, CUDA 12.4, and CuPy 13.6 and 14.2. CUDA 11 and 13 installation options have not yet been validated by this project's GPU test suite. CUDA 13 requires Turing or newer GPUs; Volta GPUs such as V100 should use CUDA 12 (see [NVIDIA's release notes](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)).
+
+CUDA runtime libraries, including NVRTC, must match the selected CuPy package and be available to the Python process. On a cluster, load the appropriate CUDA environment before starting a calculation. Check that CuPy can see your allocated GPUs:
 
 ```bash
 python -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"
@@ -100,8 +104,8 @@ For LBTE restarts, use the per-q files produced by `write_collision=True`. With 
 From the repository root, install the editable package and test dependencies:
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[cuda12,test]'
 python -m pytest tests -q
 ```
 
-Run the test suite on a machine with CUDA GPUs. Tests requiring two GPUs are skipped when fewer are visible. Include your Python, CUDA, CuPy, and phono3py versions, command or script, and error output when reporting a problem.
+Replace `cuda12` with your CUDA option, or use `.[test]` if CuPy is already installed. Run the test suite on a machine with CUDA GPUs. Tests requiring two GPUs are skipped when fewer are visible. Include your Python, CUDA, CuPy, and phono3py versions, command or script, and error output when reporting a problem.
