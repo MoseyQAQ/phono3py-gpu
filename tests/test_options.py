@@ -1,10 +1,14 @@
 """Numerical and file contracts outside the default conductivity path."""
 
 from copy import deepcopy
+from dataclasses import replace
 
 import h5py
 import numpy as np
 import pytest
+from phono3py.conductivity.build_components import build_rot_grid_points
+
+from phono3py_gpu.collision import create_collision_matrix_kernel
 
 
 def run(si, gpu, **kwargs):
@@ -70,6 +74,36 @@ def test_hdf5(si, lbte, wte, tmp_path, monkeypatch):
     np.testing.assert_allclose(
         ph.thermal_conductivity.kappa, kappa, rtol=1e-9, atol=1e-9
     )
+
+
+@pytest.mark.parametrize("include_gamma", [True, False])
+def test_mode_kappa_gamma_selection(si, include_gamma):
+    """Only the acoustic modes at Gamma are skipped, even after reordering."""
+    cpu = run(si, False, is_LBTE=True)
+    settings = cpu._kappa_settings
+    points = settings.grid_points[::-1].copy()
+    assert points[-1] == settings.bz_grid.gp_Gamma
+    if not include_gamma:
+        points = points[:-1]
+    settings = replace(settings, grid_points=points)
+    phonons = cpu._pp.phonons
+    kernel = create_collision_matrix_kernel(
+        kappa_settings=settings,
+        frequencies=phonons.frequencies,
+        degenerate_ids=phonons.degenerate_ids,
+        rot_grid_points=build_rot_grid_points(settings),
+    )
+    num_gp, num_band = len(points), phonons.frequencies.shape[1]
+    x = np.ones((num_gp * num_band, 3))
+    mode_kappa = np.zeros((1, 1, num_gp, num_band, 6))
+    kernel._set_mode_kappa(mode_kappa, x, x, num_gp, 0, 0)
+    diagonal = mode_kappa[0, 0, :, :, :3]
+    if include_gamma:
+        assert np.all(diagonal[-1, :3] == 0)
+        assert np.all(diagonal[-1, 3:] > 0)
+        assert np.all(diagonal[:-1] > 0)
+    else:
+        assert np.all(diagonal > 0)
 
 
 def test_pp_roundtrip(si, tmp_path, monkeypatch):

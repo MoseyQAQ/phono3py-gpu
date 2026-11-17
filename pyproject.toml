@@ -11,9 +11,8 @@ requires-python = ">=3.11"
 license = "BSD-3-Clause"
 license-files = ["LICENSE", "LICENSE.phono3py", "LICENSE.phonopy", "LICENSE.wte"]
 dependencies = [
-    # Release 4.10.0 lacks required calculator and phonon velocity interfaces.
-    "phono3py @ git+https://github.com/phonopy/phono3py.git@f0a2fdd005c03dcf2cc9734a52cbc6643406df86",
-    "phonopy @ git+https://github.com/phonopy/phonopy.git@cc8a6dd85912d8ae00f033ea9d38b1021d5b2dd2",
+    "phono3py @ git+https://github.com/phonopy/phono3py.git@main",
+    "phonopy @ git+https://github.com/phonopy/phonopy.git@main",
     "phonors>=0.8.0",
 ]
 

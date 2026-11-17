@@ -204,11 +204,9 @@ class GPUCollisionMixin:
         tensor += tensor.swapaxes(-1, -2).copy()
         pairs = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
         result = cp.stack([tensor[..., a, b] for a, b in pairs], axis=-1)
-        # Preserve the upstream Gamma selection and output ordering.
-        gamma = np.all(
-            self._kappa_settings.bz_grid.addresses[:num_grid_points] == 0, axis=1
-        )
-        result[cp.asarray(gamma), :3] = 0
+        gamma_index = self._get_gamma_index()
+        if gamma_index is not None:
+            result[gamma_index, :3] = 0
         t = self._kappa_settings.temperatures[i_temp]
         result *= (
             self._kappa_settings.conversion_factor * get_physical_units().KB * t * t

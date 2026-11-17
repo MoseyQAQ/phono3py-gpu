@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""Adapter for phono3py's calculator factory at f0a2fdd.
+"""Adapter for phono3py's calculator factory.
 
 Assembly follows upstream factory.py; public metadata and I/O are inherited.
 """
@@ -256,7 +256,6 @@ def make_lbte(
         frequencies=frequencies,
         degenerate_ids=interaction.phonons.degenerate_ids,
         rot_grid_points=rot_grid_points,
-        solve_collective_phonon=config.solve_collective_phonon,
         pinv_cutoff=config.pinv_cutoff,
         pinv_solver=config.pinv_solver,
         pinv_method=config.pinv_method,

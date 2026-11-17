@@ -4,7 +4,7 @@
 
 ## Installation and compatibility
 
-The dependencies are specified in [pyproject.toml](../pyproject.toml). The plugin currently requires development revisions of phono3py and phonopy. Phono3py 4.10.0 lacks the grid-point selection and bulk velocity interfaces it uses; phonopy 4.10.0 lacks `phonopy.phonon.velocity_matrix`, which the required phono3py revision imports. Installing the plugin selects the compatible revisions automatically. These pins can be replaced with release lower bounds once both projects publish the required interfaces.
+The dependencies are specified in [pyproject.toml](../pyproject.toml). The plugin follows the `main` development branches of phono3py and phonopy. A fresh installation resolves their current branch heads; existing environments are not updated automatically. Upstream API changes may require a matching plugin update.
 
 Select one of the `cuda11`, `cuda12`, or `cuda13` extras to install the matching CuPy wheel. All require CuPy 13.6 or newer; CUDA 11 uses the CuPy 13 series because CuPy 14 dropped CUDA 11 support. A plain installation (`pip install .`) leaves CuPy selection to you, including when using conda. Do not install multiple CuPy distributions in the same environment. See the [CuPy installation guide](https://docs.cupy.dev/en/stable/install.html) and [CuPy 13 guide](https://docs.cupy.dev/en/v13.6.0/install.html).
 
@@ -91,13 +91,13 @@ PHONO3PY_GPU_INITIALIZATION=reference python run_kappa.py
 
 Calculations use double precision. Mesh phonon frequencies and eigenvectors follow the upstream convention, including the treatment of degenerate modes. Default integration uses the tetrahedron method; Gaussian broadening remains available through phono3py's `sigmas` setting or CLI `--sigma` option.
 
-WTE requires all phonon branches. WTE coherence with a reducible collision matrix and `solve_collective_phonon` are not supported by the current integration.
+WTE requires all phonon branches. WTE coherence with a reducible collision matrix is not supported by the current integration.
 
 ## Saving and restarting calculations
 
 Use `write_kappa=True` to save thermal conductivity through the Python API. The CLI writes the corresponding `kappa-*.hdf5` output as usual. Gamma and interaction-strength files retain the phono3py formats.
 
-For LBTE restarts, use the per-q files produced by `write_collision=True`. With the supported upstream revision, `write_LBTE_solution=True` writes a global collision file after the solve, when its matrix has already been overwritten by eigenvectors. Keep `write_LBTE_solution=False` when preparing collision restart files, and avoid a conflicting global collision file in the restart directory.
+For LBTE restarts, use the per-q files produced by `write_collision=True`, then load them with `read_collision="all"`. The current upstream global collision reader repeats the first temperature's gamma at every temperature, so a multi-temperature global-file restart can give incorrect results. Keep `write_LBTE_solution=False` when preparing collision restart files, and avoid a conflicting global collision file in the restart directory.
 
 ## Development
 
