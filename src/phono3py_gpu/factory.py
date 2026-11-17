@@ -27,6 +27,8 @@ from phono3py_gpu.collision import create_collision_matrix_kernel
 from phono3py_gpu.harmonic import prepare_phonons
 from phono3py_gpu.interaction import InteractionKernel
 from phono3py_gpu.kappa import GPURTAKappaSolver, make_wigner_lbte, make_wigner_rta
+from phono3py_gpu.multigpu import devices
+from phono3py_gpu.multigpu import iterate as iterate_multi_gpu
 from phono3py_gpu.scattering import GPUCollisionSolver, GPUScatteringSolver
 from phono3py_gpu.velocity import GPUHeatCapacitySolver, GPUVelocitySolver
 
@@ -58,6 +60,7 @@ class GPUCalculatorMixin:
         solver = self._collision_solver if collision else self._scattering_solver
         self.q_batch_stats = dict(q_batches=0, triplet_batches=0, max_q_per_launch=0)
         solver.q_batch_stats = self.q_batch_stats
+        self.multi_gpu_stats = None
         unsupported = (
             self._pp.nac_q_direction is not None
             or (
@@ -69,6 +72,20 @@ class GPUCalculatorMixin:
                 and (self._read_gamma or solver._requires_full_gamma_path())
             )
         )
+        ids = devices()
+        indices = list(self._get_grid_point_indices())
+        if len(ids) > 1 and not unsupported and indices:
+            if collision:
+                _, _, shape, _ = collision_layout(solver)
+                bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
+                requested = batch_size(bytes_per_q, maximum=max(1, requested))
+            return iterate_multi_gpu(
+                self, solver, ids, indices, max(1, requested), collision, on_grid_point
+            )
+        if len(ids) > 1 and self._log_level:
+            print(
+                "GPU workers: using the primary GPU for requested file/state options."
+            )
         if requested <= 1 or unsupported:
             if requested > 1 and self._log_level:
                 print("GPU q batching: using per-q path for the requested options.")
@@ -77,7 +94,6 @@ class GPUCalculatorMixin:
             _, _, shape, _ = collision_layout(solver)
             bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
             requested = batch_size(bytes_per_q, maximum=requested)
-        indices = list(self._get_grid_point_indices())
         for start in range(0, len(indices), requested):
             selected = indices[start : start + requested]
             gps = self._kappa_settings.grid_points[selected]
@@ -132,6 +148,9 @@ def make_rta(
     wte: bool = False,
 ) -> RTACalculator:
     """Build an RTACalculator from variant component factories."""
+    from phono3py_gpu.backend import cupy
+
+    cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
     _validate_wte(interaction, config, wte)
@@ -200,6 +219,9 @@ def make_lbte(
     wte: bool = False,
 ) -> LBTECalculator:
     """Build an LBTECalculator from variant component factories."""
+    from phono3py_gpu.backend import cupy
+
+    cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
     _validate_wte(interaction, config, wte)

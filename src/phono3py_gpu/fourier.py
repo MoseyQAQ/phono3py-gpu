@@ -8,6 +8,7 @@ original supercell-pair order. No fast-math or frequency approximation is used.
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -56,6 +57,52 @@ extern "C" __global__ void transform(
     }
     out[((long long)leg*batch+t)*blocks*27+atom*27+cart] = make_double2(re, im);
 }
+// Each block reuses a coalesced FC3 tile across several triplets. The inner
+// supercell-pair accumulation order remains identical to transform().
+extern "C" __global__ void transform_tiled(
+    const double* fc, const long long* offsets, const int* pairs,
+    const signed char* shortest, const double2* phase,
+    const long long* triplets, double2* out,
+    int na, int ns, int batch, int average) {
+    __shared__ double f[32*32];
+    __shared__ int js[32], ks[32];
+    __shared__ signed char flags[32];
+    int cart = threadIdx.x, lane = threadIdx.y*32+cart;
+    int atom = blockIdx.x, t = blockIdx.y*blockDim.y+threadIdx.y, leg = blockIdx.z;
+    int anchor = atom/(na*na), qa = leg == 1 ? 0 : 1, qb = leg == 2 ? 0 : 2;
+    bool valid = t < batch && cart < 27;
+    long long p1 = 0, p2 = 0;
+    if (valid) {
+        p1 = (triplets[t*3+qa]*na+anchor)*ns;
+        p2 = (triplets[t*3+qb]*na+anchor)*ns;
+    }
+    double re = 0., im = 0.;
+    long long begin = offsets[atom], end = offsets[atom+1];
+    for (long long base = begin; base < end; base += 32) {
+        int count = (end-base < 32) ? int(end-base) : 32;
+        for (int i=lane; i<count*32; i+=blockDim.y*32)
+            f[i] = fc[base*32+i];
+        if (lane < count) {
+            js[lane] = pairs[(base+lane)*2];
+            ks[lane] = pairs[(base+lane)*2+1];
+            flags[lane] = shortest[base+lane];
+        }
+        __syncthreads();
+        if (valid) {
+            for (int p=0; p<count; ++p) {
+                if (average && leg > 0 && flags[p]) continue;
+                double2 x = phase[p1+js[p]], y = phase[p2+ks[p]];
+                double w = average && leg == 0 && flags[p] ? 3. : 1.;
+                double value = f[p*32+cart];
+                re += ((x.x*y.x-x.y*y.y)*w)*value;
+                im += ((x.x*y.y+x.y*y.x)*w)*value;
+            }
+        }
+        __syncthreads();
+    }
+    if (valid)
+        out[((long long)leg*batch+t)*na*na*na*27+atom*27+cart] = make_double2(re, im);
+}
 __device__ double2 premultiply(double2 x, const double* q,
     const double* origin, const long long* triplet, int a) {
     double angle = 0.;
@@ -85,6 +132,38 @@ extern "C" __global__ void assemble(
         v = make_double2(((v.x+w.x)+z.x)/3., ((v.y+w.y)+z.y)/3.);
     }
     out[index] = v;
+}
+// Reuse each FC3 block across triplets; phase products are the right GEMM operand.
+extern "C" __global__ void phase_products(
+    const int* pairs, const signed char* shortest, const double2* phase,
+    const long long* triplets, double* real, double* imag,
+    int na, int ns, int npair, int tile, int start, int count,
+    int leg, int average) {
+    long long index = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    long long size = (long long)na*na*na*npair*tile;
+    if (index >= size) return;
+    int t = index % tile;
+    long long p = index / tile;
+    int atom = p / npair, anchor = atom / (na*na);
+    real[index] = imag[index] = 0.;
+    if (t >= count || (average && leg > 0 && shortest[p])) return;
+    int qa = leg == 1 ? 0 : 1, qb = leg == 2 ? 0 : 2;
+    long long p1 = (triplets[(start+t)*3+qa]*na+anchor)*ns;
+    long long p2 = (triplets[(start+t)*3+qb]*na+anchor)*ns;
+    double2 x = phase[p1+pairs[p*2]], y = phase[p2+pairs[p*2+1]];
+    double w = average && leg == 0 && shortest[p] ? 3. : 1.;
+    real[index] = (x.x*y.x-x.y*y.y)*w;
+    imag[index] = (x.x*y.y+x.y*y.x)*w;
+}
+extern "C" __global__ void store_gemm(
+    const double* real, const double* imag, double2* legs,
+    int atoms, int batch, int tile, int start, int count, int leg) {
+    long long index = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    if (index >= (long long)atoms*27*count) return;
+    int t = index % count, cart = (index/count)%27, atom = index/(count*27);
+    long long src = ((long long)atom*32+cart)*tile+t;
+    long long dst = (((long long)leg*batch+start+t)*atoms+atom)*27+cart;
+    legs[dst] = make_double2(real[src], imag[src]);
 }
 """
 
@@ -142,6 +221,18 @@ class GPUFC3Transform:
                     offsets.append(offsets[-1] + len(jj))
         packed = np.zeros((offsets[-1], 32), dtype="double")
         packed[:, :27] = np.concatenate(values)
+        counts = np.diff(offsets)
+        self.uniform_pairs = int(counts[0]) if np.all(counts == counts[0]) else 0
+        self.method = os.environ.get("PHONO3PY_GPU_FOURIER", "tiled")
+        if self.method not in ("reference", "gemm", "tiled"):
+            raise ValueError("PHONO3PY_GPU_FOURIER must be reference, tiled or gemm.")
+        if self.method == "gemm" and not self.uniform_pairs:
+            raise ValueError("GEMM Fourier requires uniform FC3 pair blocks.")
+        self.tile = int(os.environ.get("PHONO3PY_GPU_FOURIER_TILE", "16"))
+        if self.tile < 1:
+            raise ValueError("PHONO3PY_GPU_FOURIER_TILE must be positive.")
+        if self.method == "tiled" and self.tile > 32:
+            raise ValueError("Tiled Fourier supports at most 32 triplets per block.")
         with cp.cuda.using_allocator(self.pool.malloc):
             self.fc = cp.asarray(packed)
             self.offsets = cp.asarray(offsets, dtype=cp.int64)
@@ -154,7 +245,10 @@ class GPUFC3Transform:
             module = cp.RawModule(code=_KERNELS, options=("--fmad=false",))
             phase_kernel = module.get_function("phases")
             self.kernel = module.get_function("transform")
+            self.tiled_kernel = module.get_function("transform_tiled")
             self.assemble = module.get_function("assemble")
+            self.phase_products = module.get_function("phase_products")
+            self.store_gemm = module.get_function("store_gemm")
             sv = cp.asarray(svecs, dtype=cp.float64, order="C")
             multiplicity = cp.asarray(multi, dtype=cp.int64, order="C")
             phase_kernel(
@@ -187,23 +281,44 @@ class GPUFC3Transform:
             ids = cp.asarray(triplets, dtype=cp.int64, order="C")
             legs = cp.empty((3 if self.average else 1, *shape), cp.complex128)
             result = cp.empty(shape, cp.complex128)
-            self.kernel(
-                ((self.na**3 + 3) // 4, batch, len(legs)),
-                (128,),
-                (
-                    self.fc,
-                    self.offsets,
-                    self.pairs,
-                    self.shortest,
-                    self.phase,
-                    ids,
-                    legs,
-                    np.int32(self.na),
-                    np.int32(self.ns),
-                    np.int32(batch),
-                    np.int32(self.average),
-                ),
-            )
+            if self.method == "gemm":
+                self._gemm(ids, legs, batch)
+            elif self.method == "tiled":
+                self.tiled_kernel(
+                    (self.na**3, (batch + self.tile - 1) // self.tile, len(legs)),
+                    (32, self.tile),
+                    (
+                        self.fc,
+                        self.offsets,
+                        self.pairs,
+                        self.shortest,
+                        self.phase,
+                        ids,
+                        legs,
+                        np.int32(self.na),
+                        np.int32(self.ns),
+                        np.int32(batch),
+                        np.int32(self.average),
+                    ),
+                )
+            else:
+                self.kernel(
+                    ((self.na**3 + 3) // 4, batch, len(legs)),
+                    (128,),
+                    (
+                        self.fc,
+                        self.offsets,
+                        self.pairs,
+                        self.shortest,
+                        self.phase,
+                        ids,
+                        legs,
+                        np.int32(self.na),
+                        np.int32(self.ns),
+                        np.int32(batch),
+                        np.int32(self.average),
+                    ),
+                )
             self.assemble(
                 ((result.size + 255) // 256,),
                 (256,),
@@ -219,6 +334,54 @@ class GPUFC3Transform:
                 ),
             )
             return result
+
+    def _gemm(self, ids, legs, batch):
+        """FP64 batched GEMM；固定大小相位块避免显存随尾批形状累积。"""
+        import cupy as cp
+
+        atoms, tile, npair = self.na**3, self.tile, self.uniform_pairs
+        fc = self.fc.reshape(atoms, npair, 32).swapaxes(1, 2)
+        real = cp.empty((atoms, npair, tile), dtype=cp.float64)
+        imag = cp.empty_like(real)
+        for start in range(0, batch, tile):
+            count = min(tile, batch - start)
+            for leg in range(len(legs)):
+                self.phase_products(
+                    ((real.size + 255) // 256,),
+                    (256,),
+                    (
+                        self.pairs,
+                        self.shortest,
+                        self.phase,
+                        ids,
+                        real,
+                        imag,
+                        np.int32(self.na),
+                        np.int32(self.ns),
+                        np.int32(npair),
+                        np.int32(tile),
+                        np.int32(start),
+                        np.int32(count),
+                        np.int32(leg),
+                        np.int32(self.average),
+                    ),
+                )
+                r, i = cp.matmul(fc, real), cp.matmul(fc, imag)
+                self.store_gemm(
+                    ((atoms * 27 * count + 255) // 256,),
+                    (256,),
+                    (
+                        r,
+                        i,
+                        legs,
+                        np.int32(atoms),
+                        np.int32(batch),
+                        np.int32(tile),
+                        np.int32(start),
+                        np.int32(count),
+                        np.int32(leg),
+                    ),
+                )
 
     @classmethod
     def from_interaction(cls, interaction, **kwargs):

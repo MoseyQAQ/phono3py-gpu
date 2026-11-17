@@ -104,9 +104,13 @@ def test_interleaved_collision_rows(si, reducible):
     np.testing.assert_array_equal(pp.get_triplets_at_q()[0], last_triplets)
 
 
-def test_partial_bands_and_callbacks(si, monkeypatch):
+@pytest.mark.parametrize("devices", ["0", "0,1"])
+def test_partial_bands_and_callbacks(si, monkeypatch, devices):
     from phono3py_gpu.factory import GPUCalculatorMixin
 
+    if devices == "0,1" and cupy().cuda.runtime.getDeviceCount() < 2:
+        pytest.skip("Two CUDA devices required.")
+    monkeypatch.setenv("PHONO3PY_GPU_DEVICES", devices)
     original = GPUCalculatorMixin._iterate_grid_points
     visited = []
 

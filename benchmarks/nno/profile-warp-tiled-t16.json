@@ -1,0 +1,83 @@
+{
+  "host": "16v100n04.mr-sai.ai",
+  "device": "Tesla V100-SXM2-16GB",
+  "job": "2540645",
+  "tetrahedron": "warp",
+  "fourier": "tiled",
+  "fourier_tile": 16,
+  "triplet_batch": 64,
+  "records": [
+    {
+      "gp": 1,
+      "repeat": 0,
+      "triplets": 294,
+      "weights": 0.1474709464237094,
+      "fourier": 0.5364402187988162,
+      "contractions": 0.01571829104796052,
+      "project": 0.5656823590397835,
+      "linewidth": 0.003313410095870495,
+      "total": 0.7271069413982332,
+      "reference_seconds": 1.5382388005964458
+    },
+    {
+      "gp": 1,
+      "repeat": 1,
+      "triplets": 294,
+      "weights": 0.14785818988457322,
+      "fourier": 0.5361911673098803,
+      "contractions": 0.01568135106936097,
+      "project": 0.5649451911449432,
+      "linewidth": 0.0032975119538605213,
+      "total": 0.7263120743446052,
+      "reference_seconds": 1.5358015480451286
+    },
+    {
+      "gp": 1,
+      "repeat": 2,
+      "triplets": 294,
+      "weights": 0.14768654806539416,
+      "fourier": 0.5361062963493168,
+      "contractions": 0.01523248478770256,
+      "project": 0.5640414427034557,
+      "linewidth": 0.003147620242089033,
+      "total": 0.7250925218686461,
+      "reference_seconds": 1.536372123286128
+    },
+    {
+      "gp": 340,
+      "repeat": 0,
+      "triplets": 518,
+      "weights": 0.270423190202564,
+      "fourier": 0.942804956343025,
+      "contractions": 0.02691097976639867,
+      "project": 0.9928523865528405,
+      "linewidth": 0.005922137293964624,
+      "total": 1.2837359341792762,
+      "reference_seconds": 2.712927387095988
+    },
+    {
+      "gp": 340,
+      "repeat": 1,
+      "triplets": 518,
+      "weights": 0.2708420637063682,
+      "fourier": 0.9428814849816263,
+      "contractions": 0.027461132500320673,
+      "project": 0.9937127041630447,
+      "linewidth": 0.005802854895591736,
+      "total": 1.2858719239011407,
+      "reference_seconds": 2.7125974632799625
+    },
+    {
+      "gp": 340,
+      "repeat": 2,
+      "triplets": 518,
+      "weights": 0.27113313553854823,
+      "fourier": 0.9437875831499696,
+      "contractions": 0.027647477108985186,
+      "project": 0.9948714468628168,
+      "linewidth": 0.005912215448915958,
+      "total": 1.2882070867344737,
+      "reference_seconds": 2.7135707228444517
+    }
+  ]
+}

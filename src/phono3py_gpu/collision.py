@@ -1,5 +1,7 @@
 """GPU dense LBTE solve with upstream assembly and result containers."""
 
+import os
+
 import numpy as np
 from phono3py.conductivity.collision_matrix_kernel import (
     IrreducibleCollisionMatrixKernel,
@@ -14,6 +16,21 @@ from phono3py_gpu.integration import average_axis
 class GPUCollisionMixin:
     """Device algebra shared by the irreducible and full-mesh kernels."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        mode = os.environ.get("PHONO3PY_GPU_LBTE_SOLVER", "single")
+        if mode not in ("single", "mg"):
+            raise ValueError("PHONO3PY_GPU_LBTE_SOLVER must be single or mg.")
+        self._distributed = mode == "mg"
+        self._distributed_factor = None
+        self.eigensolver_stats = []
+
+    def _get_colmat_solver(self):
+        # LAPACKE availability does not constrain the device implementation.
+        if self._pinv_solver in (1, 2, 6):
+            return self._pinv_solver
+        return super()._get_colmat_solver()
+
     def _average_collision_matrix_by_degeneracy(self):
         cp = cupy()
         ir = isinstance(self, IrreducibleCollisionMatrixKernel)
@@ -21,6 +38,18 @@ class GPUCollisionMixin:
             self._iter_ir_degenerate_ids() if ir else self._iter_mesh_degenerate_ids()
         )
         for s, t in self._iter_sigma_temp():
+            if self._distributed:
+                matrix = self._collision_matrix[s, t]
+                for i, ids in groups:
+                    row = cp.asarray(matrix[i])
+                    average_axis(row, ids, 0)
+                    matrix[i] = host(row)
+                for i, ids in groups:
+                    target = matrix[:, :, :, i] if ir else matrix[:, :, i]
+                    column = cp.asarray(target)
+                    average_axis(column, ids, 3 if ir else 2)
+                    target[:] = host(column)
+                continue
             matrix = cp.asarray(self._collision_matrix[s, t])
             for i, ids in groups:
                 average_axis(matrix[i], ids, 0)
@@ -35,6 +64,16 @@ class GPUCollisionMixin:
         cp = cupy()
         n = self._get_symmetrization_size()
         for s, t in self._iter_sigma_temp():
+            if self._distributed:
+                matrix = self._collision_matrix[s, t].reshape(n, n)
+                for start in range(0, n, 256):
+                    stop = min(start + 256, n)
+                    row = cp.asarray(matrix[start:stop])
+                    column = cp.asarray(matrix[:, start:stop]).T
+                    mean = host((row + column) / 2)
+                    matrix[start:stop] = mean
+                    matrix[:, start:stop] = mean.T
+                continue
             matrix = cp.asarray(self._collision_matrix[s, t].reshape(n, n))
             self._collision_matrix[s, t] = host((matrix + matrix.T) / 2).reshape(
                 self._collision_matrix.shape[2:]
@@ -48,6 +87,10 @@ class GPUCollisionMixin:
             if self._kappa_settings.temperatures[t] <= 0:
                 continue
             self._set_kappa_RTA_at_step(s, t, weights)
+            if self._distributed:
+                self._solve_distributed_step(s, t, solver, weights)
+                yield s, t
+                continue
             matrix = cp.asarray(self._collision_matrix[s, t].reshape(n, n))
             if solver == 7:
                 self._gpu_inverse = cp.linalg.pinv(matrix, rcond=1e-15)
@@ -70,9 +113,51 @@ class GPUCollisionMixin:
             yield s, t
         self._gpu_eigenvectors = self._gpu_eigenvalues = self._gpu_inverse = None
 
+    def _solve_distributed_step(self, sigma, temperature, solver, weights):
+        from phono3py_gpu.eigensolver import DistributedEigh
+        from phono3py_gpu.multigpu import devices
+
+        n = self._get_symmetrization_size()
+        matrix = self._collision_matrix[sigma, temperature].reshape(n, n)
+        factor = DistributedEigh(matrix, devices())
+        self._distributed_factor = factor
+        self.eigensolver_stats.append(
+            dict(
+                devices=factor.devices,
+                dimension=n,
+                workspace_bytes_per_device=factor.workspace_bytes_per_device,
+            )
+        )
+        try:
+            if solver == 7:
+                inverse = factor.inverse_values(1e-15 * np.max(np.abs(factor.values)))
+                factor.write_inverse(matrix, inverse)
+            else:
+                inverse = factor.inverse_values(self._pinv_cutoff, self._pinv_method)
+                self._collision_eigenvalues[sigma, temperature] = factor.values
+                factor.write_vectors(matrix, transpose=solver in (1, 2, 4, 5))
+            self._distributed_inverse_values = inverse
+            self._set_kappa_at_step(sigma, temperature, weights)
+            num_mesh = int(np.prod(self._kappa_settings.mesh_numbers))
+            self._kappa[sigma, temperature] /= num_mesh
+            self._kappa_RTA[sigma, temperature] /= num_mesh
+        finally:
+            self._distributed_factor = None
+            factor.close()
+
     def _solve_Y(self, solver, v, X, i_sigma, i_temp):
         cp = cupy()
         ir = isinstance(self, IrreducibleCollisionMatrixKernel)
+        if self._distributed_factor is not None:
+            factor = self._distributed_factor
+            y = factor.solve(X.ravel() if ir else X, self._distributed_inverse_values)
+            if solver == 6:
+                n = self._get_symmetrization_size()
+                factor.write_inverse(
+                    self._collision_matrix[i_sigma, i_temp].reshape(n, n),
+                    self._distributed_inverse_values,
+                )
+            return y.reshape(-1, 3)
         x = cp.asarray(X.ravel() if ir else X)
         if solver == 7:
             y = self._gpu_inverse @ x
@@ -139,6 +224,12 @@ class GPUIrreducibleCollisionKernel(
         weights = self._get_ir_weights()
         w = cp.asarray(weights)
         for s, t in self._iter_sigma_temp():
+            if self._distributed:
+                for i in range(len(weights)):
+                    row = cp.asarray(self._collision_matrix[s, t, i])
+                    row *= w[i] * w[None, None, :, None, None]
+                    self._collision_matrix[s, t, i] = host(row)
+                continue
             matrix = cp.asarray(self._collision_matrix[s, t])
             matrix *= (
                 w[:, None, None, None, None, None] * w[None, None, None, :, None, None]
@@ -153,6 +244,18 @@ class GPUReducibleCollisionKernel(GPUCollisionMixin, ReducibleCollisionMatrixKer
         cp = cupy()
         rotations = cp.asarray(rot_grid_points)
         for s, t in self._iter_sigma_temp():
+            if self._distributed:
+                matrix = self._collision_matrix[s, t]
+                for gp in ir_gr_grid_points:
+                    multiplicity = np.count_nonzero(rot_grid_points[:, gp] == gp)
+                    source = cp.asarray(matrix[gp]) / multiplicity
+                    matrix[gp] = 0
+                    for r, mapping in enumerate(rot_grid_points):
+                        target = int(mapping[gp])
+                        row = cp.asarray(matrix[target])
+                        row[:, rotations[r], :] += source
+                        matrix[target] = host(row)
+                continue
             matrix = cp.asarray(self._collision_matrix[s, t])
             for gp in ir_gr_grid_points:
                 multiplicity = np.count_nonzero(rot_grid_points[:, gp] == gp)
