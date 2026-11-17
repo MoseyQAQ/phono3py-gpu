@@ -93,6 +93,17 @@ CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
 
 只用一张卡时设置 `CUDA_VISIBLE_DEVICES=0`。同一设置也适用于 Python 脚本。LBTE 的全局求解默认仍使用一张 GPU，详见[内存要求与求解器选项](docs/advanced.md#out-of-memory)。
 
+## 性能
+
+CPU：AMD Ryzen Threadripper PRO 5995WX（8 线程）；GPU：NVIDIA Tesla V100（16 GB）。耗时单位为秒。
+
+| 算例 | 声子分支 | mesh | CPU | 1 GPU | 2 GPU | 4 GPU |
+|---|---:|---|---:|---:|---:|---:|
+| Si · BTE-RTA | 24 | 19³ | 296.6 | 31.2 | 22.9 | 16.0 |
+| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 78.2 | 61.0 | 46.5 |
+| ABO · LBTE | 60 | 6×6×5 | 441.7 | 14.7 | | |
+| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 10.9 | | |
+
 ## 帮助与贡献
 
 - [问题排查与进阶用法](docs/advanced.md)：GPU 识别、多卡、内存和调参。

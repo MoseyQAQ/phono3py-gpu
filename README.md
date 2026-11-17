@@ -93,6 +93,17 @@ CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
 
 Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scripts. For LBTE, the global solve still uses one GPU by default; see [memory requirements and solver options](docs/advanced.md#out-of-memory).
 
+## Performance
+
+CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
+
+| Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
+|---|---:|---|---:|---:|---:|---:|
+| Si · BTE-RTA | 24 | 19³ | 296.6 | 31.2 | 22.9 | 16.0 |
+| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 78.2 | 61.0 | 46.5 |
+| ABO · LBTE | 60 | 6×6×5 | 441.7 | 14.7 | | |
+| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 10.9 | | |
+
 ## Help and contributing
 
 - [Troubleshooting and advanced usage](docs/advanced.md): GPU detection, multiple GPUs, memory, and tuning.

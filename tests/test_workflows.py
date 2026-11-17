@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from phono3py.conductivity.factory import register_variant
 from phono3py.conductivity.grid_point_data import VelocityResult
+from reference_kappa import WignerLBTEKappaSolver, WignerRTAKappaSolver
 
-from phono3py_gpu._wte import WignerLBTEKappaSolver, WignerRTAKappaSolver
 from phono3py_gpu.multigpu import devices
 
 
@@ -116,6 +116,15 @@ def test_conductivity(si, lbte, wte, sigma, q_batch, monkeypatch):
         gpu.gamma_isotope, cpu.gamma_isotope, rtol=1e-7, atol=1e-11
     )
     np.testing.assert_allclose(gpu.kappa, cpu.kappa, rtol=1e-6, atol=1e-6)
+    if wte:
+        for name in ("kappa_P_RTA", "kappa_C"):
+            np.testing.assert_allclose(
+                getattr(gpu, name), getattr(cpu, name), rtol=1e-6, atol=1e-6
+            )
+        if lbte:
+            np.testing.assert_allclose(
+                gpu.kappa_P_exact, cpu.kappa_P_exact, rtol=1e-6, atol=1e-6
+            )
     if lbte:
         np.testing.assert_allclose(
             gpu.collision_eigenvalues, cpu.collision_eigenvalues, rtol=1e-7, atol=1e-9
@@ -154,3 +163,71 @@ def test_wte_nonzero_coherence(tmp_path, monkeypatch):
     assert np.max(cpu.kappa_C) > 0.01
     np.testing.assert_allclose(gpu.kappa, cpu.kappa, rtol=2e-6, atol=1e-6)
     np.testing.assert_allclose(gpu.kappa_C, cpu.kappa_C, rtol=2e-6, atol=1e-6)
+    np.testing.assert_allclose(gpu.kappa_P_RTA, cpu.kappa_P_RTA, rtol=2e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "structure,mesh",
+    [
+        ("si", [3, 3, 3]),
+        ("si_full", [3, 3, 3]),
+        ("nacl", [3, 3, 3]),
+        ("aln", [3, 3, 2]),
+    ],
+)
+@pytest.mark.parametrize(
+    "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_upstream_materials(request, structure, mesh, lbte, wte, monkeypatch):
+    """Default Rust backend, NAC and anisotropic cells against original CPU."""
+    from phono3py.phonon3.interaction import Interaction
+
+    from phono3py_gpu.initialization import reference_all_shortest
+
+    register_cpu_wte()
+    base = request.getfixturevalue(structure)
+    results, frequencies = [], []
+    for gpu in (False, True):
+        ph = deepcopy(base)
+        ph._lang = "Rust"
+        ph.mesh_numbers = mesh
+        with monkeypatch.context() as context:
+            if not gpu:
+                context.setattr(
+                    Interaction, "_get_all_shortest", reference_all_shortest
+                )
+            ph.init_phph_interaction()
+        ph.run_thermal_conductivity(
+            temperatures=[100.0, 300.0],
+            is_LBTE=lbte,
+            transport_type=("WTE-GPU" if wte else "GPU")
+            if gpu
+            else ("reference-wte" if wte else None),
+            pinv_solver=3,
+            is_isotope=True,
+        )
+        calc = ph.thermal_conductivity
+        results.append(calc)
+        frequencies.append(
+            ph.phph_interaction.phonons.frequencies[calc.grid_points].copy()
+        )
+    cpu, gpu = results
+    np.testing.assert_allclose(frequencies[1], frequencies[0], rtol=1e-10, atol=1e-8)
+    np.testing.assert_allclose(gpu.gamma, cpu.gamma, rtol=1e-7, atol=1e-11)
+    np.testing.assert_allclose(
+        gpu.gamma_isotope, cpu.gamma_isotope, rtol=1e-7, atol=1e-11
+    )
+    np.testing.assert_allclose(gpu.kappa, cpu.kappa, rtol=1e-6, atol=1e-6)
+    if wte:
+        for name in ("kappa_P_RTA", "kappa_C"):
+            np.testing.assert_allclose(
+                getattr(gpu, name), getattr(cpu, name), rtol=1e-6, atol=1e-6
+            )
+        if lbte:
+            np.testing.assert_allclose(
+                gpu.kappa_P_exact, cpu.kappa_P_exact, rtol=1e-6, atol=1e-6
+            )
+    if lbte:
+        np.testing.assert_allclose(
+            gpu.collision_eigenvalues, cpu.collision_eigenvalues, rtol=1e-7, atol=1e-9
+        )
