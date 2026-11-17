@@ -1,7 +1,5 @@
 """Batch the geometry mask used by FC3 r0 averaging, without starting CUDA."""
 
-import os
-
 import numpy as np
 from phono3py.phonon3.interaction import Interaction
 
@@ -11,12 +9,6 @@ reference_all_shortest = Interaction._get_all_shortest
 
 def all_shortest(interaction):
     """Fill (primitive atom, supercell atom, supercell atom) shortest flags."""
-    mode = os.environ.get("PHONO3PY_GPU_INITIALIZATION", "numpy")
-    if mode == "reference":
-        return reference_all_shortest(interaction)
-    if mode != "numpy":
-        raise ValueError("PHONO3PY_GPU_INITIALIZATION must be numpy or reference.")
-
     svecs, multi = interaction._svecs, interaction._multi
     primitive = interaction._primitive
     perms = primitive.atomic_permutations

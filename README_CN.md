@@ -31,7 +31,7 @@ pip3 install '.[cuda12]'
 
 安装使用 phono3py 和 phonopy 的 `main` 开发分支。上游变动可能需要同步更新插件，详见[兼容性和已测试配置](docs/advanced.md#installation-and-compatibility)。
 
-若已有兼容的 CuPy，改用 `pip3 install .` 即可。每个环境只安装一种 CuPy 包。
+若已有兼容的 CuPy，改用 `pip3 install .` 即可。
 
 ## 快速开始
 
@@ -95,7 +95,7 @@ CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
 
 ## 帮助与贡献
 
-- [问题排查与进阶用法](docs/advanced.md)：GPU 识别、多卡、内存、续算和调参。
+- [问题排查与进阶用法](docs/advanced.md)：GPU 识别、多卡、内存和调参。
 - [phono3py 文档](https://phonopy.github.io/phono3py/)：输入准备和输运计算参数。
 - [GitHub Issues](https://github.com/MoseyQAQ/phono3py-gpu/issues)：提问、报告问题或提出功能建议。
 

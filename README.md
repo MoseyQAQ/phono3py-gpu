@@ -31,7 +31,7 @@ pip3 install '.[cuda12]'
 
 Installation uses the `main` development branches of phono3py and phonopy. Upstream changes may require a plugin update; see [compatibility and tested configurations](docs/advanced.md#installation-and-compatibility).
 
-If a compatible CuPy is already installed, use `pip3 install .` instead. Install only one CuPy package per environment.
+If a compatible CuPy is already installed, use `pip3 install .` instead.
 
 ## Quick start
 
@@ -95,7 +95,7 @@ Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scr
 
 ## Help and contributing
 
-- [Troubleshooting and advanced usage](docs/advanced.md): GPU detection, multiple GPUs, memory, restarts, and tuning.
+- [Troubleshooting and advanced usage](docs/advanced.md): GPU detection, multiple GPUs, memory, and tuning.
 - [phono3py documentation](https://phonopy.github.io/phono3py/): input preparation and transport settings.
 - [GitHub Issues](https://github.com/MoseyQAQ/phono3py-gpu/issues): questions, bug reports, and feature requests.
 

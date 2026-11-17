@@ -12,7 +12,7 @@ from phono3py_gpu.initialization import reference_all_shortest
 
 
 @pytest.mark.parametrize("structure", ["si", "nacl", "skew"])
-def test_geometry_mask(request, structure, monkeypatch):
+def test_geometry_mask(request, structure):
     if structure == "skew":
         ph = Phono3py(
             PhonopyAtoms(
@@ -25,16 +25,15 @@ def test_geometry_mask(request, structure, monkeypatch):
     else:
         ph = deepcopy(request.getfixturevalue(structure))
     ph.mesh_numbers = [3] * 3
-    outputs = []
-    for mode in ("reference", "numpy"):
-        monkeypatch.setenv("PHONO3PY_GPU_INITIALIZATION", mode)
-        pp = Interaction(ph.primitive, ph._bz_grid, ph.primitive_symmetry)
-        outputs.append(pp._all_shortest)
-    np.testing.assert_array_equal(*outputs)
+    pp = Interaction(ph.primitive, ph._bz_grid, ph.primitive_symmetry)
+    actual = pp._all_shortest.copy()
+    pp._all_shortest.fill(0)
+    reference_all_shortest(pp)
+    np.testing.assert_array_equal(actual, pp._all_shortest)
 
 
 @pytest.mark.parametrize("direction", [-1, 0, 1])
-def test_strict_cutoff(si, monkeypatch, direction):
+def test_strict_cutoff(si, direction):
     ph = deepcopy(si)
     ph.mesh_numbers = [3] * 3
     pp = Interaction(ph.primitive, ph._bz_grid, ph.primitive_symmetry)
@@ -66,6 +65,5 @@ def test_strict_cutoff(si, monkeypatch, direction):
     reference_all_shortest(pp)
     expected = pp._all_shortest.copy()
     pp._all_shortest.fill(0)
-    monkeypatch.setenv("PHONO3PY_GPU_INITIALIZATION", "numpy")
     pp._get_all_shortest()
     np.testing.assert_array_equal(pp._all_shortest, expected)
