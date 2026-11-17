@@ -20,6 +20,12 @@ parser.add_argument(
     "--conventional", action="store_true", help="24 branches instead of 6"
 )
 parser.add_argument("--lbte", action="store_true")
+parser.add_argument(
+    "--sigma",
+    type=float,
+    default=None,
+    help="Gaussian width in THz; omit to use the tetrahedron method",
+)
 parser.add_argument("--repeat", type=int, default=2)
 args = parser.parse_args()
 data = Path(__file__).parents[1] / "tests/data"
@@ -35,7 +41,7 @@ base = phono3py.load(
     **kwargs,
 )
 base.mesh_numbers = [args.mesh] * 3
-base.sigmas = [0.1]
+base.sigmas = [args.sigma]
 cp = cupy()
 # Warm up context and basic CuPy kernels. The first full run is reported too.
 cp.linalg.eigh(cp.eye(8))
@@ -46,7 +52,8 @@ result = dict(
     lbte=args.lbte,
     device=cp.cuda.runtime.getDeviceProperties(0)["name"].decode(),
     temperatures=[100.0, 300.0, 600.0],
-    sigma=0.1,
+    integration="tetrahedron" if args.sigma is None else "gaussian",
+    sigma=args.sigma,
     timings={},
 )
 outputs = {}

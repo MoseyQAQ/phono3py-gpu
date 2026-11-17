@@ -80,19 +80,25 @@ FC3 和声子数据在一次 calculator 计算中复用；triplet 临时张量�
 ```bash
 python -m pytest tests -q
 python benchmarks/transport.py --mesh 5 --conventional
-python benchmarks/transport.py --mesh 5 --conventional --lbte
+python benchmarks/transport.py --mesh 9 --conventional --lbte
 ```
+
+计算接口和 benchmark 默认都使用四面体积分，无需设置 σ。要复现下述 Gaussian 计时，在对应命令末尾加 `--sigma 0.1`。Gaussian 的 σ 是能量守恒 δ 函数的数值展宽参数，与计算得到的物理线宽不同。
 
 测试数据来自上游测试集：Si、NaCl，以及带已有线宽的 60 支声子 NaMgF₃。CPU 基准使用上游计算器与原始 WTE 公式；仅为较旧 WTE 的单 q 接口增加批量调用适配。测试覆盖两种积分、NAC、相互作用、四种热导率、非零相干项、可约 LBTE、伪逆选项和文件契约。
 
-2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**39 项测试通过**。另通过 Ruff 检查与 wheel 打包检查。下表是最终代码在同一节点的完整 calculator 计时，CPU 使用 4 线程，Si 常规胞 24 支声子，Gaussian σ=0.1 THz，T=[100, 300, 600] K；取第二次运行，原始两次数据见相应 JSON：
+2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**39 项测试通过**。另通过 Ruff 检查与 wheel 打包检查。下表是完整 calculator 计时：每个算例的 CPU/GPU 在同一节点比较，CPU 为 5995WX、上游 C 后端、4 线程；Si 常规胞 24 支声子，T=[100, 300, 600] K。取第二次运行，原始两次数据见相应 JSON：
 
-| 方法与网格 | CPU / s | GPU / s | 加速比 | 热导率最大差异 / CPU 最大绝对值 |
-|---|---:|---:|---:|---:|
-| RTA，5³ | 1.7898 | 0.4218 | 4.24× | 4.98×10⁻¹⁴ |
-| LBTE，9³ | 37.7213 | 7.6317 | 4.94× | 8.28×10⁻¹⁵ |
+| 方法与网格 | 积分方式 | CPU / s | GPU / s | 加速比 | 热导率最大差异 / CPU 最大绝对值 |
+|---|---|---:|---:|---:|---:|
+| RTA，5³ | 四面体（默认） | 0.4900 | 0.4261 | 1.15× | 4.17×10⁻¹⁴ |
+| LBTE，9³ | 四面体（默认） | 12.3192 | 7.5023 | 1.64× | 1.02×10⁻¹³ |
+| RTA，5³ | Gaussian，σ=0.1 THz | 1.7898 | 0.4218 | 4.24× | 4.98×10⁻¹⁴ |
+| LBTE，9³ | Gaussian，σ=0.1 THz | 37.7213 | 7.6317 | 4.94× | 8.28×10⁻¹⁵ |
 
-原始结果：[`rta-v100.json`](benchmarks/rta-v100.json)、[`lbte-v100.json`](benchmarks/lbte-v100.json)。这些数字只代表所列算例，不是所有材料或网格的性能保证。WTE 的数值对照包含 NaMgF₃ 的非零相干项；上述性能表未对 WTE 宣称加速比。
+四面体原始结果：[`rta-tetra-v100.json`](benchmarks/rta-tetra-v100.json)、[`lbte-tetra-v100.json`](benchmarks/lbte-tetra-v100.json)；Gaussian 原始结果：[`rta-v100.json`](benchmarks/rta-v100.json)、[`lbte-v100.json`](benchmarks/lbte-v100.json)。**默认四面体路径不能套用 Gaussian 的 4–5 倍加速比。** 上游 CPU 可跳过零积分权重对应的模式三元组，当前 GPU 的完整 band 投影尚未利用这部分稀疏性。
+
+这些数字只代表所列算例，不是所有材料或网格的性能保证。WTE 的数值对照包含 NaMgF₃ 的非零相干项；上述性能表未对 WTE 宣称加速比。
 
 `benchmarks/transport.py` 在同一节点比较完整 calculator 的墙钟时间，包含设备到 NumPy 的结果复制，不包括 IFC 拟合。首轮和后续轮次都保留，并检查热导率误差。小体系可能因 kernel 启动、传输和 Python 调度而比 CPU 慢；不能从单个 CUDA 内核的速度推断整体加速比。
 
