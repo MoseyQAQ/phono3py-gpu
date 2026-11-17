@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phono3py-gpu"
+version = "0.1.0"
+description = "FP64 CUDA transport solvers for phono3py"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "LICENSE.phono3py", "LICENSE.phonopy", "LICENSE.wte"]
+dependencies = [
+    "phono3py @ git+https://github.com/phonopy/phono3py.git@f0a2fdd005c03dcf2cc9734a52cbc6643406df86",
+    "phonopy @ git+https://github.com/phonopy/phonopy.git@cc8a6dd85912d8ae00f033ea9d38b1021d5b2dd2",
+    "cupy-cuda12x>=13.6,<14",
+    "phonors>=0.8.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.entry-points."phono3py.conductivity"]
+GPU = "phono3py_gpu:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+phono3py_gpu = ["kernels/*.cu"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
