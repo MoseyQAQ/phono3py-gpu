@@ -80,6 +80,12 @@ FC3 和声子数据在一次 calculator 计算中复用；triplet 临时张量�
 
 ## 验证与计时
 
+`benchmarks/` 为本地基准目录，已加入 `.gitignore`；已有本地文件保留。历史脚本和结果仍可通过下文链接查看。新克隆需要复现基准时，可取回该目录（仍保持忽略）：
+
+```bash
+git restore --source=c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9 --worktree -- benchmarks/
+```
+
 在 GPU 节点运行：
 
 ```bash
@@ -101,7 +107,7 @@ python benchmarks/transport.py --mesh 9 --conventional --lbte
 | RTA，5³ | 0.4907 | 0.4351 | 0.1631 | 2.67× | 3.01× |
 | LBTE，9³ | 12.6569 | 7.5171 | 2.0095 | 3.74× | 6.30× |
 
-热导率最大绝对差异除以 CPU 最大绝对值分别为 4.17×10⁻¹⁴、1.73×10⁻¹⁴。两组结果保留了全部三次计时和同节点旧版 `e291226` 的原始数据：[`rta-tetra-optimized-v100.json`](benchmarks/rta-tetra-optimized-v100.json)、[`lbte-tetra-optimized-v100.json`](benchmarks/lbte-tetra-optimized-v100.json)。首次调用仍有初始化开销，本次分别为 0.3021 s 和 2.2074 s。
+热导率最大绝对差异除以 CPU 最大绝对值分别为 4.17×10⁻¹⁴、1.73×10⁻¹⁴。两组结果保留了全部三次计时和同节点旧版 `e291226` 的原始数据：[`rta-tetra-optimized-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/rta-tetra-optimized-v100.json)、[`lbte-tetra-optimized-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/lbte-tetra-optimized-v100.json)。首次调用仍有初始化开销，本次分别为 0.3021 s 和 2.2074 s。
 
 本轮主要优化：
 
@@ -110,7 +116,7 @@ python benchmarks/transport.py --mesh 9 --conventional --lbte
 - 融合线宽计算；LBTE 对每个 triplet 的两种分支顺序各归约一次，再供对称旋转复用，避免复制大型四维临时张量。
 - 合并速度张量的旋转求和，并跳过非简并单支的 1×1 本征求解。
 
-四面体分段公式、阈值、声子基底与 FP64 约定保持不变。早期四面体计时保留在 [`rta-tetra-v100.json`](benchmarks/rta-tetra-v100.json)、[`lbte-tetra-v100.json`](benchmarks/lbte-tetra-v100.json)；早期 Gaussian 计时保留在 [`rta-v100.json`](benchmarks/rta-v100.json)、[`lbte-v100.json`](benchmarks/lbte-v100.json)，它们均是优化前的历史结果。
+四面体分段公式、阈值、声子基底与 FP64 约定保持不变。早期四面体计时保留在 [`rta-tetra-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/rta-tetra-v100.json)、[`lbte-tetra-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/lbte-tetra-v100.json)；早期 Gaussian 计时保留在 [`rta-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/rta-v100.json)、[`lbte-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/lbte-v100.json)，它们均是优化前的历史结果。
 
 这些数字只代表所列算例，不是所有材料或网格的性能保证。WTE 的数值对照包含 NaMgF₃ 的非零相干项；上述性能表未对 WTE 宣称加速比。
 
@@ -144,7 +150,7 @@ python your_workflow.py
 
 实际记录确认每次 kernel 最多包含 8 个不同初始 q。上述所有批量设置相对逐 q 参考的最大归一化差异：κ < 3.3×10⁻¹⁴、γ < 1.4×10⁻¹⁵。测试还覆盖 Gaussian、简并权重平均、部分能带、交换分支、可约碰撞矩阵、分批边界和回调状态。当前数据支持把跨 q 作为可选优化，尚不足以为所有体系选择统一默认批量。
 
-完整 1/2/4/8 q、64/256 triplets 扫描、阶段计时及显存池记录见 [`q-batch-v100.json`](benchmarks/q-batch-v100.json)。显存字段是计算结束时 CuPy 默认池与 FC3 私有池保留的容量，并非整个设备的瞬时峰值。复现：
+完整 1/2/4/8 q、64/256 triplets 扫描、阶段计时及显存池记录见 [`q-batch-v100.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/q-batch-v100.json)。显存字段是计算结束时 CuPy 默认池与 FC3 私有池保留的容量，并非整个设备的瞬时峰值。复现：
 
 ```bash
 python benchmarks/q_batch.py --mesh 9
@@ -200,7 +206,7 @@ LBTE 的 calculator 加速为 25.06×（逐 q）和 25.99×（8 q）。计入输
 
 LBTE 的 κ、γ、碰撞矩阵本征值及附带 RTA κ 均与同版本 CPU 对照，最大归一化误差低于 2.1×10⁻¹³。12³ 逐 q RTA 得到 κxx / κyy / κzz = 1.495287207 / 1.770294170 / 2.029361786 W/(m·K)，与原 case 历史结果的最大绝对差为 1.8×10⁻⁹ W/(m·K)。历史结果使用较早的 phono3py/phonopy；历史耗时不作为同版本 CPU 基准。
 
-8 q 设置请求最多 256 triplets，仍会受到显存预算限制；本次 LBTE / RTA 实际上限为 132 / 131，实际 kernel 确认覆盖最多 8 个初始 q。完整阶段计时、张量、线宽和本征值保存在 [`benchmarks/nno/`](benchmarks/nno/)。另有两个 12³ 单 q 的当前 C/GPU 线宽对照，归一化误差低于 10⁻¹⁵，见 [`q-probe.json`](benchmarks/nno/q-probe.json)；这些单 q 耗时不能直接外推到完整 CPU 计算。
+8 q 设置请求最多 256 triplets，仍会受到显存预算限制；本次 LBTE / RTA 实际上限为 132 / 131，实际 kernel 确认覆盖最多 8 个初始 q。完整阶段计时、张量、线宽和本征值保存在 [`benchmarks/nno/`](https://github.com/MoseyQAQ/phono3py-gpu/tree/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/)。另有两个 12³ 单 q 的当前 C/GPU 线宽对照，归一化误差低于 10⁻¹⁵，见 [`q-probe.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/q-probe.json)；这些单 q 耗时不能直接外推到完整 CPU 计算。
 
 本轮新增的 FC3 优化在 12³ 网格的两个代表 q 上做同节点交替计时，预热后各三次取中位数：
 
@@ -209,7 +215,7 @@ LBTE 的 κ、γ、碰撞矩阵本征值及附带 RTA κ 均与同版本 CPU 对
 | 1 | 294 | 1.535 | 0.716 | 2.14× |
 | 340 | 518 | 2.709 | 1.261 | 2.15× |
 
-这是单 q 的散射阶段，包含四面体权重、FC3、投影和线宽；不包括 IFC 打包、网格初始化和热导率归约。γ 与原 kernel 对照通过。原路径约 88% 时间在 FC3 Fourier，模式投影中的矩阵收缩仅约 1%，因此收益主要来自 FC3 复用。详见 [`profile-tiled-t16.json`](benchmarks/nno/profile-tiled-t16.json)，不能把单 q 加速比直接当作完整 12³ 加速比。
+这是单 q 的散射阶段，包含四面体权重、FC3、投影和线宽；不包括 IFC 打包、网格初始化和热导率归约。γ 与原 kernel 对照通过。原路径约 88% 时间在 FC3 Fourier，模式投影中的矩阵收缩仅约 1%，因此收益主要来自 FC3 复用。详见 [`profile-tiled-t16.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/profile-tiled-t16.json)，不能把单 q 加速比直接当作完整 12³ 加速比。
 
 同节点 `16v100n22`，NNO **9³、125 个不可约 q、300 K**，新版 Fourier、逐 q、64 triplets，分别运行一次完整 RTA calculator：
 
@@ -234,9 +240,9 @@ LBTE 的 κ、γ、碰撞矩阵本征值及附带 RTA κ 均与同版本 CPU 对
 | 完整 calculator | 30.10 | 29.55 |
 | 上述三项合计 | 67.26 | 35.79 |
 
-初始化实测加速 **27.78×**，减少 28.84 s；合计耗时减少约 46.8%。合计也包含两次输入读取的差异，因此 1.88× 总加速不能全部归于初始化。完整几何表 SHA256 相同，γ 和 κ 逐元素相同。容差边界处的逐项复核使正式实现略慢于最初不带该检查的 0.715 s 几何函数原型。原始记录为 [`initreference`](benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initreference.json) 和 [`initnumpy`](benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initnumpy.json)。
+初始化实测加速 **27.78×**，减少 28.84 s；合计耗时减少约 46.8%。合计也包含两次输入读取的差异，因此 1.88× 总加速不能全部归于初始化。完整几何表 SHA256 相同，γ 和 κ 逐元素相同。容差边界处的逐项复核使正式实现略慢于最初不带该检查的 0.715 s 几何函数原型。原始记录为 [`initreference`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initreference.json) 和 [`initnumpy`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initnumpy.json)。
 
-新旧阶段计时和检查结果均在 [`benchmarks/nno/`](benchmarks/nno/)，汇总见 [`comparison.json`](benchmarks/nno/comparison.json)。新记录包含源码 SHA256；`plugin_commit` 是运行时父提交，测试时改动尚未提交。以上网格用于实现验证，均不代表 κ 的网格收敛。
+新旧阶段计时和检查结果均在 [`benchmarks/nno/`](https://github.com/MoseyQAQ/phono3py-gpu/tree/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/)，汇总见 [`comparison.json`](https://github.com/MoseyQAQ/phono3py-gpu/blob/c78eb04e00cd508b25cb2b4c60cdd1f9442d13d9/benchmarks/nno/comparison.json)。新记录包含源码 SHA256；`plugin_commit` 是运行时父提交，测试时改动尚未提交。以上网格用于实现验证，均不代表 κ 的网格收敛。
 
 复现需要上述外部 case 的原始 IFC。四卡测试的示例：
 
