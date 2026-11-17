@@ -41,7 +41,10 @@ parser.add_argument("--triplet-batch", type=int, default=64)
 parser.add_argument("--read-gamma-from", type=Path)
 parser.add_argument("--devices", type=int, nargs="+")
 parser.add_argument("--lbte-solver", choices=["single", "mg"], default="single")
+parser.add_argument("--initialization", choices=["numpy", "reference"])
 args = parser.parse_args()
+if args.initialization is not None:
+    os.environ["PHONO3PY_GPU_INITIALIZATION"] = args.initialization
 if args.backend == "cpu" and args.method == "wte":
     assert args.read_gamma_from is not None
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
@@ -65,6 +68,8 @@ if args.backend == "gpu":
     stem += os.environ.get("PHONO3PY_GPU_FOURIER_TILE", "16")
 if args.lbte_solver == "mg":
     stem += "-mg"
+if args.initialization is not None:
+    stem += "-init" + args.initialization
 os.environ["PHONO3PY_GPU_LBTE_SOLVER"] = args.lbte_solver
 source = hashlib.sha256()
 for path in sorted(Path("src/phono3py_gpu").rglob("*")):
@@ -214,6 +219,10 @@ result = dict(
     ),
     load_seconds=load_seconds,
     initialization_seconds=init_seconds,
+    initialization=os.environ.get("PHONO3PY_GPU_INITIALIZATION", "numpy"),
+    geometry_mask_sha256=hashlib.sha256(
+        ph.phph_interaction._all_shortest.tobytes()
+    ).hexdigest(),
     conductivity_seconds=seconds,
     stage_seconds=stages,
     max_host_RSS_MiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,

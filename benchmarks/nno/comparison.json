@@ -99,6 +99,14 @@
       "max_absolute_error": 0.0,
       "normalized_max_error": 0.0
     },
+    "initialization:gamma": {
+      "max_absolute_error": 0.0,
+      "normalized_max_error": 0.0
+    },
+    "initialization:kappa": {
+      "max_absolute_error": 0.0,
+      "normalized_max_error": 0.0
+    },
     "wte-gpu-m6-q1-t64-g4-tiled16:gamma": {
       "max_absolute_error": 0.0,
       "normalized_max_error": 0.0
@@ -127,6 +135,8 @@
     "rta-gpu-m9-q1-t64-g1-tiled16": 89.41839961591177,
     "rta-gpu-m9-q1-t64-g2-tiled16": 49.781198570970446,
     "rta-gpu-m9-q1-t64-g4-tiled16": 29.112550155026838,
+    "rta-gpu-m9-q1-t64-g4-tiled16-initreference": 30.095851011108607,
+    "rta-gpu-m9-q1-t64-g4-tiled16-initnumpy": 29.54898875299841,
     "wte-gpu-m6-q1-t64-g4-tiled16": 10.152560630813241,
     "wte-cpu-m6-q1-t64-readgamma": 2.3634405117481947
   },
@@ -141,6 +151,8 @@
     "rta-gpu-m9-q1-t64-g1-tiled16": 127.02783362800255,
     "rta-gpu-m9-q1-t64-g2-tiled16": 85.80532252695411,
     "rta-gpu-m9-q1-t64-g4-tiled16": 64.70430837897584,
+    "rta-gpu-m9-q1-t64-g4-tiled16-initreference": 67.25512242130935,
+    "rta-gpu-m9-q1-t64-g4-tiled16-initnumpy": 35.786320075858384,
     "wte-gpu-m6-q1-t64-g4-tiled16": 45.260857176966965,
     "wte-cpu-m6-q1-t64-readgamma": 38.00996761303395
   }

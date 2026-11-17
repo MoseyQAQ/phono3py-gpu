@@ -21,6 +21,9 @@ if [ "$1" = "scale" ]; then
     .venv/bin/python -u benchmarks/nno.py --backend gpu --method rta --mesh 9 --devices 0 1 2 3
 elif [ "$1" = "profile" ]; then
     .venv/bin/python -u benchmarks/profile_nno.py
+elif [ "$1" = "init" ]; then
+    .venv/bin/python -u benchmarks/nno.py --backend gpu --method rta --mesh 9 --devices 0 1 2 3 --initialization reference
+    .venv/bin/python -u benchmarks/nno.py --backend gpu --method rta --mesh 9 --devices 0 1 2 3 --initialization numpy
 elif [ "$1" = "solve" ]; then
     .venv/bin/python -u benchmarks/nno.py --backend gpu --method lbte --mesh 6 --devices 0
     .venv/bin/python -u benchmarks/nno.py --backend gpu --method lbte --mesh 6 --devices 0 1 2 3 --lbte-solver mg

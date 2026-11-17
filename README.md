@@ -51,6 +51,10 @@ phono3py-load --lbte --tt WTE-GPU --mesh 9 9 9 --ts 300
 
 可用 `CUDA_VISIBLE_DEVICES` 选择 GPU。显式调用 `phono3py_gpu.register()` 可以重新注册，并在依赖不匹配时获得直接的异常信息。无需安装 `phono3py-wte`；本插件内保留其公式、属性和输出适配代码及许可证。
 
+`init_phph_interaction()` 默认也会加速：插件注册时，将上游 `Interaction._get_all_shortest` 替换为 NumPy 批量几何计算，保留最短矢量多重性与严格距离容差；接近舍入边界时使用上游的逐项运算。该步骤不启动 CUDA，Python/CLI 均无须增加调用。
+
+初始化早于 `transport_type` 的选择，因此**插件加载后，同一进程里的 CPU 工作流也使用这项初始化优化**。仅修改进程内的辅助函数，不改动安装的 phono3py 文件；每次初始化由当前几何重新计算。对照原始 CPU 初始化时，可在启动程序前设置 `PHONO3PY_GPU_INITIALIZATION=reference`；默认值为 `numpy`。下文旧 CPU 基准的初始化时间来自原实现，不能视为优化后的 CPU 初始化时间。
+
 ## 计算范围
 
 | 组件 | 执行位置 |
@@ -63,6 +67,7 @@ phono3py-load --lbte --tt WTE-GPU --mesh 9 9 9 --ts 300
 | 热容、RTA 热导率、WTE P/C 项 | GPU；公开结果在主机保存 |
 | LBTE 简并平均、对称化、稠密本征分解/伪逆与矩阵乘法 | GPU |
 | 全网格 LBTE 碰撞矩阵的对称性展开 | GPU |
+| r0 平均所需的三原子最短距离表 | CPU NumPy 批量计算 |
 | 结构与网格拓扑、IFC 拟合、文件读写、少量标量装配 | 上游 CPU |
 
 FC3 和声子数据在一次 calculator 计算中复用；triplet 临时张量按可用显存分批，所有温度共用同一批 interaction。LBTE 稠密矩阵逐个 sigma/温度移入 GPU 求解，仍需要主机存放上游要求的完整碰撞矩阵。显存不足时报错，不会悄悄把重计算切回 CPU。四面体整数邻点在 calculator 内缓存；对于零积分权重的 band 三元组，最后一级模式投影直接跳过，前两级仍使用稠密矩阵收缩。`is_full_pp` 和 q 置换对称化仍按上游要求计算完整相互作用。
@@ -87,7 +92,7 @@ python benchmarks/transport.py --mesh 9 --conventional --lbte
 
 测试数据来自上游测试集：Si、NaCl，以及带已有线宽的 60 支声子 NaMgF₃。CPU 基准使用上游计算器与原始 WTE 公式；仅为较旧 WTE 的单 q 接口增加批量调用适配。测试覆盖两种积分、NAC、相互作用、四种热导率、非零相干项、可约 LBTE、伪逆选项和文件契约。
 
-2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**75 项测试通过**。覆盖部分能带/全零权重投影、交换声子分支、分批边界、四种输运方法的多卡对照、顺序回调、worker 异常退出，以及多温度的分布式本征分解和伪逆。另将工作流和文件选项测试强制切为双卡，**31 项均通过**；通过 Ruff 检查与 wheel 打包检查。
+2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**81 项测试通过**。覆盖部分能带/全零权重投影、交换声子分支、分批边界、四种输运方法的多卡对照、顺序回调、worker 异常退出，以及多温度的分布式本征分解和伪逆。新增初始化测试逐元素对照 Si、NaCl、斜晶胞的几何表，并覆盖距离恰好等于容差及相邻浮点数的情况。上一轮另将工作流和文件选项测试强制切为双卡，**31 项均通过**；通过 Ruff 检查与 wheel 打包检查。
 
 下表为优化后的完整 calculator 计时，积分方式均为默认四面体。优化前后使用同一节点 `16v100n10` 的单张 V100；CPU 为 5995WX、上游 C 后端、4 线程。Si 常规胞 24 支声子，T=[100, 300, 600] K；每组 CPU/GPU 各运行三次，表中取第三次：
 
@@ -220,6 +225,17 @@ LBTE 的 κ、γ、碰撞矩阵本征值及附带 RTA κ 均与同版本 CPU 对
 
 同一节点另完成 **6³ WTE-RTA 四卡**，全新散射的 calculator 为 **10.15 s**。复用其 γ，仅用 CPU 重算 WTE 速度与热导率作独立公式对照，κ / κP / κC 的最大绝对差为 1.86×10⁻⁹ / 1.80×10⁻⁹ / 5.87×10⁻¹¹ W/(m·K)。该 CPU 对照不包含重新计算散射，不能用于宣称 CPU/GPU 完整 WTE 加速比。12³ WTE 的已取消任务未恢复。
 
+接入默认 NumPy 初始化后，在同节点 `16v100n27` 再次对照 **9³ RTA、四张 V100、CPU 4 线程**。两次均为独立进程、重新计算散射，其余设置相同：
+
+| 阶段 | 原初始化 / s | NumPy 初始化 / s |
+|---|---:|---:|
+| 输入读取与结构构建 | 7.24 | 5.16 |
+| `init_phph_interaction()` | 29.92 | 1.08 |
+| 完整 calculator | 30.10 | 29.55 |
+| 上述三项合计 | 67.26 | 35.79 |
+
+初始化实测加速 **27.78×**，减少 28.84 s；合计耗时减少约 46.8%。合计也包含两次输入读取的差异，因此 1.88× 总加速不能全部归于初始化。完整几何表 SHA256 相同，γ 和 κ 逐元素相同。容差边界处的逐项复核使正式实现略慢于最初不带该检查的 0.715 s 几何函数原型。原始记录为 [`initreference`](benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initreference.json) 和 [`initnumpy`](benchmarks/nno/rta-gpu-m9-q1-t64-g4-tiled16-initnumpy.json)。
+
 新旧阶段计时和检查结果均在 [`benchmarks/nno/`](benchmarks/nno/)，汇总见 [`comparison.json`](benchmarks/nno/comparison.json)。新记录包含源码 SHA256；`plugin_commit` 是运行时父提交，测试时改动尚未提交。以上网格用于实现验证，均不代表 κ 的网格收敛。
 
 复现需要上述外部 case 的原始 IFC。四卡测试的示例：
@@ -231,12 +247,14 @@ sbatch --gpus-per-node=4 --qos=rush-gpu benchmarks/run-nno.sbatch scale
 PHONO3PY_GPU_FOURIER=tiled PHONO3PY_GPU_FOURIER_TILE=16 \
 sbatch --gpus-per-node=4 --qos=rush-gpu benchmarks/run-nno.sbatch solve
 sbatch benchmarks/run-nno.sbatch profile
+# 同节点比较原初始化与默认 NumPy 初始化，均重新计算完整 9³ RTA：
+sbatch --gpus-per-node=4 --qos=rush-gpu benchmarks/run-nno.sbatch init
 # 检查仓库内已完成的结果；不要求已取消的 12³ WTE 输出：
 .venv/bin/python benchmarks/check_nno.py
 ```
 
 ## 代码与许可
 
-`factory.py` 是依赖上游私有注册表的集中适配层；`interaction.py`、`scattering.py`、`collision.py` 分别处理相互作用、散射和全局 LBTE；`multigpu.py` 管理独立 q 的多卡调度，`eigensolver.py` 对接分布式稠密求解；`harmonic.py`、`velocity.py` 与 `kappa.py` 处理谐波和热流算符。
+`factory.py` 是依赖上游私有注册表的集中适配层，`initialization.py` 接管初始化的几何辅助函数；`interaction.py`、`scattering.py`、`collision.py` 分别处理相互作用、散射和全局 LBTE；`multigpu.py` 管理独立 q 的多卡调度，`eigensolver.py` 对接分布式稠密求解；`harmonic.py`、`velocity.py` 与 `kappa.py` 处理谐波和热流算符。
 
 `fourier.py` 基于原 kappa 项目的 GPU Fourier 实现扩展；模式投影及后续散射现在在 GPU 上完成。`_wte.py` 与 `tests/reference_velocity.py` 保留 WTE 上游公式/参考代码。四面体 CUDA 分段公式来自 phonopy。许可证与版权声明见 `LICENSE`、`LICENSE.phono3py`、`LICENSE.phonopy`、`LICENSE.wte`。

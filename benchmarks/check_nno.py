@@ -58,6 +58,16 @@ for count in (2, 4):
         scale["grid_points"]
     )
 
+init_prefix = "rta-gpu-m9-q1-t64-g4-tiled16-init"
+if (root / f"{init_prefix}numpy.npz").exists():
+    reference = load(init_prefix + "reference")
+    optimized = load(init_prefix + "numpy")
+    compare_fields("initialization", optimized, reference, ("gamma", "kappa"))
+    assert (
+        records[init_prefix + "reference"]["geometry_mask_sha256"]
+        == records[init_prefix + "numpy"]["geometry_mask_sha256"]
+    )
+
 wte6 = "wte-gpu-m6-q1-t64-g4-tiled16"
 if (root / f"{wte6}.npz").exists():
     compare_fields(
