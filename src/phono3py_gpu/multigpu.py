@@ -5,7 +5,6 @@ main guard and never fork an initialized CUDA context. A temporary CPU snapshot
 preserves the canonical phonon basis; only NumPy results cross process boundaries.
 """
 
-import os
 import pickle
 import queue
 import subprocess
@@ -22,17 +21,8 @@ from phono3py_gpu.backend import cupy
 
 
 def devices():
-    """Return logical device IDs within CUDA_VISIBLE_DEVICES."""
-    cp = cupy()
-    value = os.environ.get("PHONO3PY_GPU_DEVICES")
-    if value is None:
-        return [cp.cuda.runtime.getDevice()]
-    ids = [int(x.strip()) for x in value.split(",")]
-    if len(set(ids)) != len(ids) or any(
-        d < 0 or d >= cp.cuda.runtime.getDeviceCount() for d in ids
-    ):
-        raise ValueError("PHONO3PY_GPU_DEVICES must list distinct visible GPU IDs.")
-    return ids
+    """Use every GPU visible to the CUDA runtime."""
+    return list(range(cupy().cuda.runtime.getDeviceCount()))
 
 
 def _exchange(process, value):

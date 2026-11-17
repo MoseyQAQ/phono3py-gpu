@@ -2,10 +2,7 @@
 
 English | [简体中文](README_CN.md)
 
-## Features
-
-- **A phono3py plugin.** Keep your existing inputs, Python scripts, and command-line workflow; select the GPU transport option to get started.
-- **GPU acceleration.** Run lattice thermal conductivity calculations on one or more NVIDIA GPUs.
+Calculate lattice thermal conductivity on NVIDIA GPUs using your existing phono3py inputs and workflow.
 
 ## Installation
 
@@ -13,54 +10,47 @@ Requirements:
 
 - Python 3.11 or newer
 - An NVIDIA GPU with a compatible driver
-- CUDA Toolkit matching your CuPy installation (11.2–11.8, 12.x, or 13.x)
+- CUDA Toolkit matching your CuPy installation
 - Git and C/C++ compilers to build the dependencies
 
-Install in a dedicated environment:
+Choose **one** CUDA option for your environment:
+
+| CUDA Toolkit | Installation option |
+|---|---|
+| 11.2–11.8 | `cuda11` |
+| 12.x | `cuda12` |
+| 13.x | `cuda13` |
+
+The example below uses **CUDA 12**. Replace `cuda12` if needed:
 
 ```bash
 git clone https://github.com/MoseyQAQ/phono3py-gpu.git
 cd phono3py-gpu
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install '.[cuda12]'
+pip3 install '.[cuda12]'
 ```
 
-Choose **one** installation option for your CUDA environment:
+Installation uses the `main` development branches of phono3py and phonopy. Upstream changes may require a plugin update; see [compatibility and tested configurations](docs/advanced.md#installation-and-compatibility).
 
-| CUDA Toolkit | Install command |
-|---|---|
-| 11.2–11.8 | `python -m pip install '.[cuda11]'` |
-| 12.x | `python -m pip install '.[cuda12]'` |
-| 13.x | `python -m pip install '.[cuda13]'` |
-
-If a compatible CuPy is already installed, use `python -m pip install .` to reuse it. Install only one CuPy package per environment. See [installation notes](docs/advanced.md#installation-and-compatibility) for dependency compatibility and tested configurations.
+If a compatible CuPy is already installed, use `pip3 install .` instead. Install only one CuPy package per environment.
 
 ## Quick start
 
-Start in a phono3py calculation directory containing these matching input files:
-
-```text
-phono3py_params.yaml
-fc2.hdf5
-fc3.hdf5
-```
-
-The YAML file describes your structure and supercells; the HDF5 files contain its second- and third-order force constants. For input preparation, see the [phono3py documentation](https://phonopy.github.io/phono3py/).
-
-### Command line
-
-Run a BTE-RTA calculation at 300 K:
+### CLI
 
 ```bash
-phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
+# Run in a calculation directory containing matching input files:
+# phono3py_params.yaml: structure and supercells
+# fc2.hdf5: second-order force constants
+# fc3.hdf5: third-order force constants
+# Input preparation: https://phonopy.github.io/phono3py/
+
+# BTE-RTA at 300 K using GPU
+phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300 # "--tt GPU"
 ```
 
-Results are written to a `kappa-*.hdf5` file in the calculation directory. Choose the mesh and temperatures for your system.
+Results are written to a `kappa-*.hdf5` file in the calculation directory.
 
-### Python
-
-Save the following as `run_kappa.py` in the same calculation directory and run it with `python run_kappa.py`:
+### API
 
 ```python
 import phono3py
@@ -74,17 +64,15 @@ ph3.mesh_numbers = [9, 9, 9]
 ph3.init_phph_interaction()
 ph3.run_thermal_conductivity(
     temperatures=[300],
-    transport_type="GPU",
+    transport_type="GPU", # Important
     write_kappa=True,
 )
 print(ph3.thermal_conductivity.kappa)
 ```
 
-The returned thermal conductivity is in W/(m·K). In an existing Python calculation, select the plugin with `transport_type="GPU"` or `"WTE-GPU"`.
+In an existing Python calculation, select the plugin with `transport_type="GPU"` or `"WTE-GPU"`.
 
-## Usage
-
-### Choose a transport method
+## Supported transport methods
 
 | Method | Python `transport_type` | Python `is_LBTE` | CLI options |
 |---|---|---|---|
@@ -93,35 +81,21 @@ The returned thermal conductivity is in W/(m·K). In an existing Python calculat
 | WTE-RTA | `"WTE-GPU"` | `False` (default) | `--br --tt WTE-GPU` |
 | WTE-LBTE | `"WTE-GPU"` | `True` | `--lbte --tt WTE-GPU` |
 
-For example, run WTE-LBTE with:
+WTE is included; no separate phono3py-wte installation is needed.
+
+## Use multiple GPUs
+
+Calculations use all visible GPUs on the same machine. Set `CUDA_VISIBLE_DEVICES` before starting to select GPUs; for example, to use GPUs 0 and 1:
 
 ```bash
-phono3py-load --lbte --tt WTE-GPU --mesh 9 9 9 --ts 300
+CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
-WTE is included; no separate phono3py-wte installation is needed. Integration defaults to the tetrahedron method.
-
-### Use multiple GPUs
-
-By default, calculations use one GPU. To use two GPUs on the same machine:
-
-```bash
-PHONO3PY_GPU_DEVICES=0,1 python run_kappa.py
-```
-
-The same setting works with the CLI:
-
-```bash
-PHONO3PY_GPU_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
-```
-
-Device numbers refer to GPUs visible through `CUDA_VISIBLE_DEVICES`. See [advanced configuration](docs/advanced.md) for memory requirements, batching, and LBTE solver options.
-
-## Performance
+Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scripts. For LBTE, the global solve still uses one GPU by default; see [memory requirements and solver options](docs/advanced.md#out-of-memory).
 
 ## Help and contributing
 
-- [Advanced configuration](docs/advanced.md): GPU selection, memory, compatibility, and troubleshooting.
+- [Troubleshooting and advanced usage](docs/advanced.md): GPU detection, multiple GPUs, memory, restarts, and tuning.
 - [phono3py documentation](https://phonopy.github.io/phono3py/): input preparation and transport settings.
 - [GitHub Issues](https://github.com/MoseyQAQ/phono3py-gpu/issues): questions, bug reports, and feature requests.
 

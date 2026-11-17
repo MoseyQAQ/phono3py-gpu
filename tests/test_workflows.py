@@ -10,6 +10,7 @@ from phono3py.conductivity.factory import register_variant
 from phono3py.conductivity.grid_point_data import VelocityResult
 
 from phono3py_gpu._wte import WignerLBTEKappaSolver, WignerRTAKappaSolver
+from phono3py_gpu.multigpu import devices
 
 
 def register_cpu_wte():
@@ -103,6 +104,11 @@ def test_conductivity(si, lbte, wte, sigma, q_batch, monkeypatch):
         )
         results.append(ph.thermal_conductivity)
     cpu, gpu = results
+    visible = devices()
+    if len(visible) > 1:
+        assert gpu.multi_gpu_stats["devices"] == visible
+    else:
+        assert gpu.multi_gpu_stats is None
     if q_batch > 1:
         assert gpu.q_batch_stats["max_q_per_launch"] > 1
     np.testing.assert_allclose(gpu.gamma, cpu.gamma, rtol=1e-7, atol=1e-11)

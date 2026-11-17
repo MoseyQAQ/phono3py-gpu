@@ -7,6 +7,14 @@ import pytest
 
 from phono3py_gpu.backend import cupy, host
 from phono3py_gpu.fourier import GPUFC3Transform
+from phono3py_gpu.multigpu import devices
+
+
+def test_visible_devices():
+    cp = cupy()
+    expected = list(range(cp.cuda.runtime.getDeviceCount()))
+    with cp.cuda.Device(expected[-1]):
+        assert devices() == expected
 
 
 @pytest.mark.parametrize("average", [False, True])
@@ -34,12 +42,13 @@ def test_fourier_reuse(si, monkeypatch, average, method):
     "lbte,wte", [(False, False), (False, True), (True, False), (True, True)]
 )
 def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
-    if cupy().cuda.runtime.getDeviceCount() < 2:
+    visible = devices()
+    if len(visible) < 2:
         pytest.skip("Two CUDA devices required.")
     monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", "2")
     values = []
-    for ids in ("0", "0,1"):
-        monkeypatch.setenv("PHONO3PY_GPU_DEVICES", ids)
+    for ids in ([0], visible):
+        monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: ids)
         ph = deepcopy(si)
         ph.mesh_numbers = [4] * 3
         ph.sigmas = [None, 0.1]
@@ -53,7 +62,7 @@ def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
         )
         values.append(ph.thermal_conductivity)
     reference, result = values
-    assert result.multi_gpu_stats["devices"] == [0, 1]
+    assert result.multi_gpu_stats["devices"] == visible
     assert sum(
         x["q_points"] for x in result.multi_gpu_stats["per_device"].values()
     ) == len(result.grid_points)
@@ -85,7 +94,6 @@ def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
 def test_worker_failure(si, monkeypatch):
     if cupy().cuda.runtime.getDeviceCount() < 2:
         pytest.skip("Two CUDA devices required.")
-    monkeypatch.setenv("PHONO3PY_GPU_DEVICES", "0,1")
     monkeypatch.setenv("PHONO3PY_GPU_FOURIER", "invalid")
     ph = deepcopy(si)
     ph.mesh_numbers = [3] * 3
@@ -143,7 +151,6 @@ def test_distributed_lbte(si, monkeypatch, wte, reducible, pinv, method):
     results = []
     for mode in ("single", "mg"):
         monkeypatch.setenv("PHONO3PY_GPU_LBTE_SOLVER", mode)
-        monkeypatch.setenv("PHONO3PY_GPU_DEVICES", "0" if mode == "single" else "0,1")
         ph = deepcopy(si)
         ph.mesh_numbers = [3] * 3
         ph.init_phph_interaction()
