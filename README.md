@@ -65,7 +65,7 @@ phono3py-load --lbte --tt WTE-GPU --mesh 9 9 9 --ts 300
 | 全网格 LBTE 碰撞矩阵的对称性展开 | GPU |
 | 结构与网格拓扑、IFC 拟合、文件读写、少量标量装配 | 上游 CPU |
 
-FC3 和声子数据在一次 calculator 计算中复用；triplet 临时张量按可用显存分批，所有温度共用同一批 interaction。LBTE 稠密矩阵逐个 sigma/温度移入 GPU 求解，仍需要主机存放上游要求的完整碰撞矩阵。显存不足时报错，不会悄悄把重计算切回 CPU。当前仍计算批内的完整 band 三元组，再应用零权重掩码；稀疏投影是后续性能优化项。
+FC3 和声子数据在一次 calculator 计算中复用；triplet 临时张量按可用显存分批，所有温度共用同一批 interaction。LBTE 稠密矩阵逐个 sigma/温度移入 GPU 求解，仍需要主机存放上游要求的完整碰撞矩阵。显存不足时报错，不会悄悄把重计算切回 CPU。四面体整数邻点在 calculator 内缓存；对于零积分权重的 band 三元组，最后一级模式投影直接跳过，前两级仍使用稠密矩阵收缩。`is_full_pp` 和 q 置换对称化仍按上游要求计算完整相互作用。
 
 **数值约定。** 默认四面体插值未平均简并带权重，换用另一组合法的简并本征矢可能改变结果；恰好落在四面体顶点的频率也对舍入约定敏感。因此 calculator 保留上游的网格声子频率、本征矢，以及 WTE 未扰动 q 点的投影基底。这是显式的兼容性步骤。独立的 `Harmonic.solve` 提供 GPU 本征求解，但不在默认工作流中替换这些基底。WTE 有限差分步长、简并阈值、半宽/全宽换算和 LBTE 伪逆截断均沿用上游。
 
@@ -83,20 +83,29 @@ python benchmarks/transport.py --mesh 5 --conventional
 python benchmarks/transport.py --mesh 9 --conventional --lbte
 ```
 
-计算接口和 benchmark 默认都使用四面体积分，无需设置 σ。要复现下述 Gaussian 计时，在对应命令末尾加 `--sigma 0.1`。Gaussian 的 σ 是能量守恒 δ 函数的数值展宽参数，与计算得到的物理线宽不同。
+计算接口和 benchmark 默认都使用四面体积分，无需设置 σ。要运行 Gaussian 对照，在对应命令末尾加 `--sigma 0.1`。Gaussian 的 σ 是能量守恒 δ 函数的数值展宽参数，与计算得到的物理线宽不同。
 
 测试数据来自上游测试集：Si、NaCl，以及带已有线宽的 60 支声子 NaMgF₃。CPU 基准使用上游计算器与原始 WTE 公式；仅为较旧 WTE 的单 q 接口增加批量调用适配。测试覆盖两种积分、NAC、相互作用、四种热导率、非零相干项、可约 LBTE、伪逆选项和文件契约。
 
-2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**39 项测试通过**。另通过 Ruff 检查与 wheel 打包检查。下表是完整 calculator 计时：每个算例的 CPU/GPU 在同一节点比较，CPU 为 5995WX、上游 C 后端、4 线程；Si 常规胞 24 支声子，T=[100, 300, 600] K。取第二次运行，原始两次数据见相应 JSON：
+2026-11-17，V100-SXM2 16 GB、CUDA Toolkit 12.4.1、CuPy 13.6 上，**43 项测试通过**，包括部分能带/全零权重投影、交换声子分支及分批边界的碰撞矩阵逐元素对照。另通过 Ruff 检查与 wheel 打包检查。
 
-| 方法与网格 | 积分方式 | CPU / s | GPU / s | 加速比 | 热导率最大差异 / CPU 最大绝对值 |
-|---|---|---:|---:|---:|---:|
-| RTA，5³ | 四面体（默认） | 0.4900 | 0.4261 | 1.15× | 4.17×10⁻¹⁴ |
-| LBTE，9³ | 四面体（默认） | 12.3192 | 7.5023 | 1.64× | 1.02×10⁻¹³ |
-| RTA，5³ | Gaussian，σ=0.1 THz | 1.7898 | 0.4218 | 4.24× | 4.98×10⁻¹⁴ |
-| LBTE，9³ | Gaussian，σ=0.1 THz | 37.7213 | 7.6317 | 4.94× | 8.28×10⁻¹⁵ |
+下表为优化后的完整 calculator 计时，积分方式均为默认四面体。优化前后使用同一节点 `16v100n10` 的单张 V100；CPU 为 5995WX、上游 C 后端、4 线程。Si 常规胞 24 支声子，T=[100, 300, 600] K；每组 CPU/GPU 各运行三次，表中取第三次：
 
-四面体原始结果：[`rta-tetra-v100.json`](benchmarks/rta-tetra-v100.json)、[`lbte-tetra-v100.json`](benchmarks/lbte-tetra-v100.json)；Gaussian 原始结果：[`rta-v100.json`](benchmarks/rta-v100.json)、[`lbte-v100.json`](benchmarks/lbte-v100.json)。**默认四面体路径不能套用 Gaussian 的 4–5 倍加速比。** 上游 CPU 可跳过零积分权重对应的模式三元组，当前 GPU 的完整 band 投影尚未利用这部分稀疏性。
+| 方法与网格 | CPU / s | 优化前 GPU / s | 优化后 GPU / s | 新版相对旧版 GPU | 新版相对 CPU |
+|---|---:|---:|---:|---:|---:|
+| RTA，5³ | 0.4907 | 0.4351 | 0.1631 | 2.67× | 3.01× |
+| LBTE，9³ | 12.6569 | 7.5171 | 2.0095 | 3.74× | 6.30× |
+
+热导率最大绝对差异除以 CPU 最大绝对值分别为 4.17×10⁻¹⁴、1.73×10⁻¹⁴。两组结果保留了全部三次计时和同节点旧版 `e291226` 的原始数据：[`rta-tetra-optimized-v100.json`](benchmarks/rta-tetra-optimized-v100.json)、[`lbte-tetra-optimized-v100.json`](benchmarks/lbte-tetra-optimized-v100.json)。首次调用仍有初始化开销，本次分别为 0.3021 s 和 2.2074 s。
+
+本轮主要优化：
+
+- 缓存四面体整数邻点，复用各温度的 Bose 占据数与碰撞矩阵热因子。
+- 用单个 CUDA kernel 完成最后一级模式投影及频率归一化，跳过严格零积分权重项。
+- 融合线宽计算；LBTE 对每个 triplet 的两种分支顺序各归约一次，再供对称旋转复用，避免复制大型四维临时张量。
+- 合并速度张量的旋转求和，并跳过非简并单支的 1×1 本征求解。
+
+四面体分段公式、阈值、声子基底与 FP64 约定保持不变。早期四面体计时保留在 [`rta-tetra-v100.json`](benchmarks/rta-tetra-v100.json)、[`lbte-tetra-v100.json`](benchmarks/lbte-tetra-v100.json)；早期 Gaussian 计时保留在 [`rta-v100.json`](benchmarks/rta-v100.json)、[`lbte-v100.json`](benchmarks/lbte-v100.json)，它们均是优化前的历史结果。
 
 这些数字只代表所列算例，不是所有材料或网格的性能保证。WTE 的数值对照包含 NaMgF₃ 的非零相干项；上述性能表未对 WTE 宣称加速比。
 

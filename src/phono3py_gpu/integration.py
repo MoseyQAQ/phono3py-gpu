@@ -7,6 +7,29 @@ from phonopy.phonon.tetrahedron_method import get_tetrahedra_relative_gr_grid_ad
 from phono3py_gpu.backend import cupy, kernel
 
 
+class TetrahedronTopology:
+    """Reuse upstream integer BZ neighbours for a fixed interaction mesh."""
+
+    def __init__(self, pp):
+        self.grid = pp.bz_grid
+        self.relative = get_tetrahedra_relative_gr_grid_address(
+            pp.bz_grid, pp.symmetrize_tetrahedra
+        )
+        self.neighbours = ({}, {})
+
+    def vertices(self, triplets):
+        vertices = np.empty((len(triplets), 2, len(self.relative), 4), dtype="int64")
+        for leg, sign in enumerate((1, -1)):
+            cache = self.neighbours[leg]
+            for q in np.unique(triplets[:, leg + 1]):
+                if q not in cache:
+                    cache[q] = get_neighboring_grid_points(
+                        int(q), sign * self.relative, self.grid
+                    )
+            vertices[:, leg] = [cache[q] for q in triplets[:, leg + 1]]
+        return vertices
+
+
 def average_axis(values, ids, axis, minimum=False):
     """Average or AND-mask each complete degenerate block, in place."""
     cp = cupy()
@@ -33,6 +56,7 @@ def weights(
     sigma,
     sigma_cutoff=None,
     collision=False,
+    vertices=None,
 ):
     """Return device (g, g_zero), in the upstream channel and band order."""
     cp = cupy()
@@ -64,18 +88,8 @@ def weights(
         )
         g *= (zero == 0)[None]
     else:
-        relative = get_tetrahedra_relative_gr_grid_address(
-            pp.bz_grid, pp.symmetrize_tetrahedra
-        )
-        vertices = np.empty((len(triplets), 2, len(relative), 4), dtype="int64")
-        # Integer BZ topology remains upstream; all frequency arithmetic is CUDA.
-        for t, triplet in enumerate(triplets):
-            vertices[t, 0] = get_neighboring_grid_points(
-                int(triplet[1]), relative, pp.bz_grid
-            )
-            vertices[t, 1] = get_neighboring_grid_points(
-                int(triplet[2]), -relative, pp.bz_grid
-            )
+        if vertices is None:
+            vertices = TetrahedronTopology(pp).vertices(triplets)
         g = cp.empty((nc, *shape))
         zero = cp.empty(shape, dtype=cp.int8)
         kernel("tetrahedron.cu", "weights")(
@@ -90,7 +104,7 @@ def weights(
                 np.int32(len(triplets)),
                 np.int32(nf),
                 np.int32(nb),
-                np.int32(len(relative)),
+                np.int32(vertices.shape[2]),
                 np.int32(nc),
             ),
         )

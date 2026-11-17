@@ -55,6 +55,77 @@ def test_interaction(si, sigma):
     np.testing.assert_allclose(host(result), reference, atol=1e-25, rtol=1e-9)
 
 
+@pytest.mark.parametrize("all_zero", [False, True])
+def test_masked_partial_projection(si, all_zero):
+    """Check skipped amplitudes and non-contiguous band order against upstream."""
+    from copy import deepcopy
+
+    cp = cupy()
+    ph = deepcopy(si)
+    ph.band_indices = [[4, 0, 2]]
+    ph.mesh_numbers = [4, 4, 4]
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    pp.set_grid_point(1)
+    triplets = pp.get_triplets_at_q()[0]
+    nb = pp.phonons.frequencies.shape[1]
+    shape = (len(triplets), len(pp.band_indices), nb, nb)
+    zero = np.ones(shape, dtype="byte")
+    if not all_zero:
+        zero = (np.random.default_rng(41).random(shape) < 0.7).astype("byte")
+        zero[0] = 1
+    pp.run(g_zero=zero)
+    engine = InteractionKernel(
+        pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
+    )
+    result = host(engine.compute(triplets, cp.asarray(zero)))
+    np.testing.assert_allclose(result, pp.interaction_strength, rtol=1e-9, atol=1e-25)
+    assert np.count_nonzero(result[zero != 0]) == 0
+
+
+@pytest.mark.parametrize("reducible", [False, True])
+def test_collision_batches(si, reducible):
+    """Compare unsymmetrized rows, including swapped legs and batch boundaries."""
+    from copy import deepcopy
+
+    from phono3py.conductivity.lbte_collision_solver import LBTECollisionSolver
+    from phono3py.phonon3.collision_matrix import CollisionMatrix
+    from phonopy.phonon.grid import get_grid_points_by_rotations
+
+    from phono3py_gpu.scattering import GPUCollisionSolver
+
+    cp = cupy()
+    ph = deepcopy(si)
+    ph.mesh_numbers = [4, 4, 4]
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    targets = None
+    if not reducible:
+        targets = np.array(
+            [
+                get_grid_points_by_rotations(int(gp), pp.bz_grid, with_surface=False)
+                for gp in pp.bz_grid.grg2bzg
+            ]
+        )
+    collision = CollisionMatrix(pp, rot_grid_points=targets, lang="C")
+    options = dict(
+        sigmas=[None], sigma_cutoff=None, temperatures=np.array([0.0, 100.0, 300.0])
+    )
+    expected = LBTECollisionSolver(pp, collision, **options).compute(1)
+    engine = InteractionKernel(
+        pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
+    )
+    for size in (1, 3):
+        engine.batch_size = size
+        result = GPUCollisionSolver(pp, collision, engine=engine, **options).compute(1)
+        np.testing.assert_allclose(result.gamma, expected.gamma, rtol=1e-9, atol=1e-13)
+        np.testing.assert_allclose(
+            result.collision_row, expected.collision_row, rtol=1e-9, atol=1e-13
+        )
+
+
 @pytest.mark.parametrize("sigma", [None, 0.1])
 def test_scattering(si, sigma):
     from phono3py.conductivity.scattering_solvers import RTAScatteringSolver

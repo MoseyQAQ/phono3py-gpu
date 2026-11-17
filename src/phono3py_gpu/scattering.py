@@ -11,7 +11,7 @@ from phono3py.file_IO import read_pp_from_hdf5
 from phono3py.phonon3.imag_self_energy import ImagSelfEnergy
 from phonopy.physical_units import get_physical_units
 
-from phono3py_gpu.backend import cupy, host
+from phono3py_gpu.backend import cupy, host, kernel
 from phono3py_gpu.integration import weights
 
 
@@ -36,21 +36,32 @@ def occupations(frequency, temperature, cutoff):
     return 1 / cp.expm1(x)
 
 
-def linewidth_detail(engine, triplets, strength, g, temperature):
-    """Unweighted per-triplet gamma in THz."""
+def linewidth_detail(engine, triplets, strength, g, temperature, occupation=None):
+    """Unweighted per-triplet gamma in THz, with one fused CUDA kernel."""
     cp = cupy()
-    tp = cp.asarray(triplets)
-    f1 = engine.frequencies[tp[:, 1]]
-    f2 = engine.frequencies[tp[:, 2]]
-    n1 = occupations(f1, temperature, engine.pp.cutoff_frequency)
-    n2 = occupations(f2, temperature, engine.pp.cutoff_frequency)
-    factor = (n1[:, None, :, None] + n2[:, None, None, :] + 1) * g[0] + (
-        n1[:, None, :, None] - n2[:, None, None, :]
-    ) * g[1]
-    valid = (f1[:, None, :, None] > engine.pp.cutoff_frequency) & (
-        f2[:, None, None, :] > engine.pp.cutoff_frequency
+    if occupation is None:
+        occupation = occupations(
+            engine.frequencies, temperature, engine.pp.cutoff_frequency
+        )
+    result = cp.empty(strength.shape)
+    kernel("scattering.cu", "linewidth")(
+        ((result.size + 127) // 128,),
+        (128,),
+        (
+            result,
+            cp.ascontiguousarray(strength),
+            g,
+            engine.frequencies,
+            occupation,
+            cp.asarray(triplets),
+            np.int32(len(triplets)),
+            np.int32(strength.shape[1]),
+            np.int32(engine.nb),
+            np.float64(engine.pp.cutoff_frequency),
+            np.float64(ImagSelfEnergy(engine.pp).unit_conversion_factor),
+        ),
     )
-    return strength * factor * valid * ImagSelfEnergy(engine.pp).unit_conversion_factor
+    return result
 
 
 def interaction_batches(
@@ -87,6 +98,7 @@ def interaction_batches(
             sigma,
             sigma_cutoff,
             collision,
+            vertices=engine.tetrahedron.vertices(selected) if sigma is None else None,
         )
         if loaded_zero is not None and not collision:
             expected_zero = loaded_zero[start : start + len(selected)]
@@ -111,6 +123,10 @@ class GPUScatteringSolver(RTAScatteringSolver):
     def __init__(self, *args, engine, **kwargs):
         super().__init__(*args, **kwargs)
         self.engine = engine
+        self._occupations = [
+            occupations(engine.frequencies, t, engine.pp.cutoff_frequency)
+            for t in self._temperatures
+        ]
 
     @property
     def supports_rust_batching(self):
@@ -152,7 +168,12 @@ class GPUScatteringSolver(RTAScatteringSolver):
                     ) / self.engine.nb**2
                 for k, temperature in enumerate(self._temperatures):
                     values = linewidth_detail(
-                        self.engine, selected, strength, g, temperature
+                        self.engine,
+                        selected,
+                        strength,
+                        g,
+                        temperature,
+                        self._occupations[k],
                     )
                     weighted = values.sum(axis=(2, 3)) * w[:, None]
                     gamma[j, k] += weighted.sum(axis=0)
@@ -183,13 +204,28 @@ class GPUCollisionSolver(LBTECollisionSolver):
     def __init__(self, *args, engine, **kwargs):
         super().__init__(*args, **kwargs)
         self.engine = engine
+        self._occupations = [
+            occupations(engine.frequencies, t, engine.pp.cutoff_frequency)
+            for t in self._temperatures
+        ]
+
+        cp = cupy()
+        u = get_physical_units()
+        valid = engine.frequencies > engine.pp.cutoff_frequency
+        f = cp.where(valid, engine.frequencies, 1)
+        self._inv_sinh = [
+            cp.where(valid, 1 / cp.sinh(f * u.THzToEv / (2 * u.KB * t)), 0)
+            if t > 0
+            else cp.zeros_like(f)
+            for t in self._temperatures
+        ]
 
     def compute(self, grid_point):
         cp = cupy()
         pp, collision = self._pp, self._collision
         collision.set_grid_point(grid_point)
         triplets, multiplicities = pp.get_triplets_at_q()[:2]
-        gp2tp, tp2s, swapped = collision._get_gp2tp_map()
+        gp2tp, _, swapped = collision._get_gp2tp_map()
         reducible = collision._is_reducible_collision_matrix
         nb0, nb = len(pp.band_indices), self.engine.nb
         ns, nt = len(self._sigmas), len(self._temperatures)
@@ -205,7 +241,9 @@ class GPUCollisionSolver(LBTECollisionSolver):
         rows = np.zeros((ns, nt, *rowshape))
         average = cp.zeros(nb0) if self._is_full_pp else None
         unit = collision.unit_conversion_factor
-        u = get_physical_units()
+        target_triplets = cp.asarray(gp2tp[targets])
+        target_swapped = cp.asarray(swapped[targets])
+        device_rotations = cp.asarray(rotations)
         for j, sigma in enumerate(self._sigmas):
             row = cp.zeros((nt, *rowshape))
             saved, saved_zero = [], []
@@ -224,46 +262,52 @@ class GPUCollisionSolver(LBTECollisionSolver):
                     average += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
                         axis=0
                     ) / nb**2
-                out_i, out_r = np.nonzero(
-                    (gp2tp[targets] >= start) & (gp2tp[targets] < end)
-                )
-                target = targets[out_i, out_r]
-                ti = cp.asarray(gp2tp[target] - start)
-                partner = cp.asarray(tp2s[target])
-                sw = cp.asarray(swapped[target]).astype(bool)
                 for k, temperature in enumerate(self._temperatures):
                     values = linewidth_detail(
-                        self.engine, selected, strength, g, temperature
+                        self.engine,
+                        selected,
+                        strength,
+                        g,
+                        temperature,
+                        self._occupations[k],
                     )
                     gamma[j, k] += (values.sum(axis=(2, 3)) * w[:, None]).sum(axis=0)
-                    if temperature <= 0 or not len(target):
+                    if temperature <= 0:
                         continue
-                    f = self.engine.frequencies[partner]
-                    valid = f > pp.cutoff_frequency
-                    inv = cp.where(
-                        valid,
-                        1
-                        / cp.sinh(
-                            cp.where(valid, f, 1) * u.THzToEv / (2 * u.KB * temperature)
+                    reduced = cp.empty((2, len(selected), nb0, nb))
+                    kernel("scattering.cu", "collision_reduce")(
+                        ((reduced.size + 127) // 128,),
+                        (128,),
+                        (
+                            reduced,
+                            cp.ascontiguousarray(strength),
+                            g[2],
+                            self._inv_sinh[k],
+                            cp.asarray(selected),
+                            np.int32(len(selected)),
+                            np.int32(nb0),
+                            np.int32(nb),
+                            np.float64(unit),
                         ),
-                        0,
                     )
-                    product = strength[ti] * g[2, ti]
-                    product = cp.where(
-                        sw[:, None, None, None], product.swapaxes(2, 3), product
+                    kernel("scattering.cu", "collision_rows")(
+                        ((row[k].size + 127) // 128,),
+                        (128,),
+                        (
+                            row[k],
+                            reduced,
+                            target_triplets,
+                            target_swapped,
+                            device_rotations,
+                            np.int32(len(selected)),
+                            np.int32(nb0),
+                            np.int32(nb),
+                            np.int32(targets.shape[0]),
+                            np.int32(targets.shape[1]),
+                            np.int32(start),
+                            np.int32(1 if reducible else 3),
+                        ),
                     )
-                    reduced = (product * inv[:, None, None, :]).sum(axis=3) * unit
-                    if reducible:
-                        row[k, :, cp.asarray(out_i), :] = reduced
-                    else:
-                        for r in np.unique(out_r):
-                            take = np.flatnonzero(out_r == r)
-                            ids = cp.asarray(out_i[take])
-                            block = (
-                                reduced[cp.asarray(take), :, None, :, None]
-                                * cp.asarray(rotations[r])[None, None, :, None, :]
-                            )
-                            row[k][:, :, ids, :, :] += block.transpose(1, 2, 0, 3, 4)
                 saved.append(host(strength))
                 saved_zero.append(host(zero))
             rows[j] = host(row)

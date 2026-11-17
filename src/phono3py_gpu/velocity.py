@@ -63,6 +63,9 @@ class GPUVelocitySolver(GroupVelocitySolver):
         pp = self._pp
         qs = get_qpoints_from_bz_grid_points(np.asarray(grid_points), pp.bz_grid)
         bands = cp.asarray(pp.band_indices)
+        rotations = cp.asarray(self._rotations_cartesian)
+        first, second = np.asarray(VOIGT_INDEX_PAIRS).T
+        first, second = cp.asarray(first), cp.asarray(second)
         velocities, products, operators = [], [], []
         for gp, q in zip(grid_points, qs, strict=True):
             if self.wte:
@@ -103,6 +106,8 @@ class GPUVelocitySolver(GroupVelocitySolver):
                     lifting = (mats[0] - mats[1]) / (2 * self._gv_delta_q)
                 rotated = e.copy()
                 for deg in degenerate_sets(host(freq)):
+                    if len(deg) == 1:
+                        continue
                     ids = cp.asarray(deg)
                     block = e[:, ids]
                     _, rotation = eigh(block.conj().T @ lifting @ block)
@@ -125,11 +130,8 @@ class GPUVelocitySolver(GroupVelocitySolver):
                 multi = len(mapped) // len(np.unique(mapped))
             else:
                 multi = 1
-            outer = cp.zeros((*vector.shape[:-1], 6), dtype=vector.dtype)
-            for rotation in self._rotations_cartesian:
-                v = vector @ cp.asarray(rotation).T
-                for j, (a, b) in enumerate(VOIGT_INDEX_PAIRS):
-                    outer[..., j] += v[..., a] * v[..., b].conj() / multi
+            v = cp.einsum("...a,rba->r...b", vector, rotations)
+            outer = (v[..., first] * v[..., second].conj()).sum(axis=0) / multi
             products.append(host(outer))
         gv = np.asarray(velocities).reshape(len(grid_points), len(bands), 3)
         if self.wte:

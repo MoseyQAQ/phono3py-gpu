@@ -4,8 +4,9 @@ from itertools import permutations
 
 import numpy as np
 
-from phono3py_gpu.backend import batch_size, cupy
+from phono3py_gpu.backend import batch_size, cupy, kernel
 from phono3py_gpu.fourier import GPUFC3Transform
+from phono3py_gpu.integration import TetrahedronTopology
 
 
 class InteractionKernel:
@@ -17,12 +18,19 @@ class InteractionKernel:
         self.frequencies = frequencies
         self.eigenvectors = eigenvectors
         self.nb = frequencies.shape[1]
-        self.mass_eigenvectors = (
+        self.mass_eigenvectors = cp.ascontiguousarray(
             eigenvectors
             / cp.sqrt(cp.repeat(cp.asarray(pp.primitive.masses), 3))[None, :, None]
         )
         self._fourier = None
+        self._tetrahedron = None
         self.batch_size = batch_size(16 * self.nb**3 * 9, maximum=64)
+
+    @property
+    def tetrahedron(self):
+        if self._tetrahedron is None:
+            self._tetrahedron = TetrahedronTopology(self.pp)
+        return self._tetrahedron
 
     @property
     def fourier(self):
@@ -31,7 +39,7 @@ class InteractionKernel:
             self._fourier = GPUFC3Transform.from_interaction(self.pp)
         return self._fourier
 
-    def project(self, triplets, bands):
+    def project(self, triplets, bands, zero=None):
         """Contract atom-first reciprocal FC3 without conjugating eigenvectors."""
         cp = cupy()
         n = len(triplets)
@@ -41,10 +49,32 @@ class InteractionKernel:
             n, self.nb, self.nb, self.nb
         )
         tp = cp.asarray(triplets)
-        e0, e1, e2 = [self.mass_eigenvectors[tp[:, i]] for i in range(3)]
+        e0, e1 = [self.mass_eigenvectors[tp[:, i]] for i in range(2)]
         e0 = e0[:, :, cp.asarray(bands)]
         a = cp.einsum("tijk,tia->tajk", tensor, e0)
         b = cp.einsum("tajk,tjb->tabk", a, e1)
+        if zero is not None:
+            result = cp.empty((n, len(bands), self.nb, self.nb))
+            kernel("interaction.cu", "masked_projection")(
+                ((result.size + 127) // 128,),
+                (128,),
+                (
+                    result,
+                    b,
+                    self.mass_eigenvectors,
+                    self.frequencies,
+                    tp,
+                    cp.asarray(bands, dtype=cp.int64),
+                    cp.ascontiguousarray(zero, dtype=cp.int8),
+                    np.int32(n),
+                    np.int32(len(bands)),
+                    np.int32(self.nb),
+                    np.float64(self.pp.cutoff_frequency),
+                    *(np.int64(s // b.itemsize) for s in b.strides),
+                ),
+            )
+            return result
+        e2 = self.mass_eigenvectors[tp[:, 2]]
         amplitude = cp.einsum("tabk,tkc->tabc", b, e2)
         f0 = self.frequencies[tp[:, 0]][:, cp.asarray(bands)]
         f1 = self.frequencies[tp[:, 1]]
@@ -73,7 +103,5 @@ class InteractionKernel:
                 inverse = np.argsort(permutation)
                 result += values.transpose(0, *(inverse + 1))[:, cp.asarray(bands)] / 6
         else:
-            result = self.project(triplets, bands)
-            if zero is not None:
-                result *= zero == 0
+            result = self.project(triplets, bands, zero)
         return result * pp.unit_conversion_factor
