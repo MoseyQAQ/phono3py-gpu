@@ -84,6 +84,30 @@ def test_masked_partial_projection(si, all_zero):
     assert np.count_nonzero(result[zero != 0]) == 0
 
 
+@pytest.mark.parametrize("fixture", ["si", "si_full"])
+def test_sparse_fc3_packing(fixture, request):
+    """Compare nonuniform FC3 blocks and an empty anchor with upstream."""
+    from copy import deepcopy
+
+    ph = deepcopy(request.getfixturevalue(fixture))
+    mask = np.random.default_rng(17).random(ph.fc3.shape[:3]) < 0.3
+    mask[0] = False
+    ph.fc3_nonzero_indices = mask.astype("byte")
+    ph.mesh_numbers = [3, 3, 3]
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    pp.set_grid_point(1)
+    pp.run()
+    cp = cupy()
+    engine = InteractionKernel(
+        pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
+    )
+    result = host(engine.compute(pp.get_triplets_at_q()[0]))
+    assert np.any(pp.interaction_strength)
+    np.testing.assert_allclose(result, pp.interaction_strength, atol=1e-25, rtol=1e-9)
+
+
 @pytest.mark.parametrize("reducible", [False, True])
 def test_collision_batches(si, reducible):
     """Compare unsymmetrized rows, including swapped legs and batch boundaries."""
