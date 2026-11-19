@@ -29,7 +29,7 @@ cd phono3py-gpu
 pip3 install '.[cuda12]'
 ```
 
-安装使用 phono3py 和 phonopy 的 `main` 开发分支。上游变动可能需要同步更新插件，详见[兼容性和已测试配置](docs/advanced.md#installation-and-compatibility)。
+安装时从固定的 Git 提交构建 phono3py 和 phonopy。这两个版本已与 PyPI 发布的 phonors 0.8.0 一起验证，具体提交见 [pyproject.toml](pyproject.toml)。
 
 若已有兼容的 CuPy，改用 `pip3 install .` 即可。
 

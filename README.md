@@ -29,7 +29,7 @@ cd phono3py-gpu
 pip3 install '.[cuda12]'
 ```
 
-Installation uses the `main` development branches of phono3py and phonopy. Upstream changes may require a plugin update; see [compatibility and tested configurations](docs/advanced.md#installation-and-compatibility).
+The installer builds phono3py and phonopy from specific Git commits tested with the PyPI release of phonors 0.8.0. The exact revisions are listed in [pyproject.toml](pyproject.toml).
 
 If a compatible CuPy is already installed, use `pip3 install .` instead.
 
