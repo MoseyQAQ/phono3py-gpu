@@ -204,25 +204,23 @@ class GPUFC3Transform:
         start = time.perf_counter()
         compact = fc3.shape[0] != fc3.shape[1]
         groups = [np.flatnonzero(s2p == p) for p in p2s]
-        offsets = [0]
-        values, pairs, flags = [], [], []
-        # Keep native j-then-k summation order; omit only explicit nonzero masks.
-        for a in range(self.na):
-            row = a if compact else p2s[a]
-            for js in groups:
-                for ks in groups:
-                    jj, kk = np.meshgrid(js, ks, indexing="ij")
-                    jj, kk = jj.ravel(), kk.ravel()
-                    keep = nonzero[row, jj, kk] != 0
-                    jj, kk = jj[keep], kk[keep]
-                    values.append(fc3[row, jj, kk].reshape(-1, 27))
-                    pairs.append(np.column_stack((jj, kk)))
-                    flags.append(all_shortest[a, jj, kk])
-                    offsets.append(offsets[-1] + len(jj))
-        packed = np.zeros((offsets[-1], 32), dtype="double")
-        packed[:, :27] = np.concatenate(values)
-        counts = np.diff(offsets)
-        self.uniform_pairs = int(counts[0]) if np.all(counts == counts[0]) else 0
+        # Pure translations give every primitive atom the same number of images.
+        # Flatten one anchor in (j atom, k atom, j image, k image) order.
+        images = np.asarray(groups, dtype=np.int32)
+        js, ks = np.broadcast_arrays(images[:, None, :, None], images[None, :, None, :])
+        js, ks = js.ravel(), ks.ravel()
+        rows = np.arange(self.na) if compact else p2s
+        counts = np.empty((self.na, self.na**2), dtype=np.int64)
+        for a, row in enumerate(rows):
+            counts[a] = np.count_nonzero(
+                nonzero[row, js, ks].reshape(self.na**2, -1), axis=1
+            )
+        offsets = np.empty(counts.size + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(counts.ravel(), out=offsets[1:])
+        self.uniform_pairs = (
+            int(counts.flat[0]) if np.all(counts == counts.flat[0]) else 0
+        )
         self.method = os.environ.get("PHONO3PY_GPU_FOURIER", "tiled")
         if self.method not in ("reference", "gemm", "tiled"):
             raise ValueError("PHONO3PY_GPU_FOURIER must be reference, tiled or gemm.")
@@ -234,10 +232,22 @@ class GPUFC3Transform:
         if self.method == "tiled" and self.tile > 32:
             raise ValueError("Tiled Fourier supports at most 32 triplets per block.")
         with cp.cuda.using_allocator(self.pool.malloc):
-            self.fc = cp.asarray(packed)
+            n_pairs = int(offsets[-1])
+            self.fc = cp.empty((n_pairs, 32), dtype=cp.float64)
+            self.pairs = cp.empty((n_pairs, 2), dtype=cp.int32)
+            self.shortest = cp.empty(n_pairs, dtype=cp.int8)
+            for a, row in enumerate(rows):
+                block = slice(offsets[a * self.na**2], offsets[(a + 1) * self.na**2])
+                keep = nonzero[row, js, ks] != 0
+                j, k = js[keep], ks[keep]
+                packed = np.zeros((len(j), 32), dtype=np.float64)
+                packed[:, :27] = fc3[row, j, k].reshape(-1, 27)
+                self.fc[block].set(packed)
+                self.pairs[block].set(np.column_stack((j, k)))
+                self.shortest[block].set(
+                    np.asarray(all_shortest[a, j, k], dtype=np.int8)
+                )
             self.offsets = cp.asarray(offsets, dtype=cp.int64)
-            self.pairs = cp.asarray(np.concatenate(pairs), dtype=cp.int32)
-            self.shortest = cp.asarray(np.concatenate(flags), dtype=cp.int8)
             self.qpoints = cp.asarray(qpoints, dtype=cp.float64, order="C")
             self.origins = cp.asarray(svecs[multi[p2s, 0, 1]], order="C")
             self.phase = cp.empty((len(qpoints), self.na, self.ns), cp.complex128)
