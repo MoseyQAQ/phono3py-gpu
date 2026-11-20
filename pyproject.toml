@@ -11,9 +11,9 @@ requires-python = ">=3.11"
 license = "BSD-3-Clause"
 license-files = ["LICENSE", "LICENSE.phono3py", "LICENSE.phonopy", "LICENSE.wte"]
 dependencies = [
-    "phono3py @ git+https://github.com/phonopy/phono3py.git@main",
-    "phonopy @ git+https://github.com/phonopy/phonopy.git@main",
-    "phonors>=0.8.0",
+    "phono3py @ git+https://github.com/phonopy/phono3py.git@20b2d10d59693f43fef32adce37e736f673c9ac5",
+    "phonopy @ git+https://github.com/phonopy/phonopy.git@74b566a2a4051f6d7585597b80e58a78057b12bf",
+    "phonors==0.8.0",
 ]
 
 [project.optional-dependencies]
