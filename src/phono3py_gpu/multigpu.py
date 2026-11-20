@@ -156,7 +156,8 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
                     last_state = state
                 if calculator._log_level:
                     print(
-                        f"GPU {device}: completed {calculator._grid_point_count}/"
+                        f"phono3py-gpu: GPU {device}: completed "
+                        f"{calculator._grid_point_count}/"
                         f"{len(indices)} q points.",
                         flush=True,
                     )

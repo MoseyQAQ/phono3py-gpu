@@ -201,7 +201,7 @@ class GPUScatteringSolver(RTAScatteringSolver):
 class GPUCollisionSolver(LBTECollisionSolver):
     """GPU collision rows using upstream integer symmetry maps."""
 
-    def __init__(self, *args, engine, retain_pp=True, **kwargs):
+    def __init__(self, *args, engine, retain_pp=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.engine = engine
         self.retain_pp = retain_pp

@@ -25,6 +25,15 @@ def cupy():
     return cp
 
 
+def report_devices(stage, device_ids, note=""):
+    runtime = cupy().cuda.runtime
+    labels = []
+    for device in device_ids:
+        name = runtime.getDeviceProperties(device)["name"].decode()
+        labels.append(f"GPU {device} ({name})")
+    print(f"phono3py-gpu: {stage}: {', '.join(labels)}{note}", flush=True)
+
+
 def host(array):
     """Synchronize a device result at the public NumPy API boundary."""
     if isinstance(array, np.ndarray):

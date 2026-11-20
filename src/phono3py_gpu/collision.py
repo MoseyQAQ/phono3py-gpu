@@ -9,15 +9,16 @@ from phono3py.conductivity.collision_matrix_kernel import (
 )
 from phonopy.physical_units import get_physical_units
 
-from phono3py_gpu.backend import cupy, eigh, host
+from phono3py_gpu.backend import cupy, eigh, host, report_devices
 from phono3py_gpu.integration import average_axis
 
 
 class GPUCollisionMixin:
     """Device algebra shared by the irreducible and full-mesh kernels."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, wte=False, **kwargs):
         super().__init__(*args, **kwargs)
+        self._transport = "WTE-LBTE" if wte else "BTE-LBTE"
         mode = os.environ.get("PHONO3PY_GPU_LBTE_SOLVER", "single")
         if mode not in ("single", "mg"):
             raise ValueError("PHONO3PY_GPU_LBTE_SOLVER must be single or mg.")
@@ -83,9 +84,17 @@ class GPUCollisionMixin:
         cp = cupy()
         n = self._get_symmetrization_size()
         solver = self._get_colmat_solver()
+        report = self._log_level
         for s, t in self._iter_sigma_temp():
             if self._kappa_settings.temperatures[t] <= 0:
                 continue
+            if report:
+                from phono3py_gpu.multigpu import devices
+
+                ids = devices() if self._distributed else [cp.cuda.runtime.getDevice()]
+                note = " (cuSOLVERMg)" if self._distributed else ""
+                report_devices(f"{self._transport} global solve", ids, note)
+                report = False
             self._set_kappa_RTA_at_step(s, t, weights)
             if self._distributed:
                 self._solve_distributed_step(s, t, solver, weights)

@@ -21,7 +21,7 @@ from phono3py.conductivity.kappa_solvers import LBTEKappaSolver
 from phono3py.phonon3.collision_matrix import CollisionMatrix
 from phono3py.phonon3.interaction import Interaction
 
-from phono3py_gpu.backend import batch_size
+from phono3py_gpu.backend import batch_size, cupy, report_devices
 from phono3py_gpu.batching import collision_layout, compute_q_batch
 from phono3py_gpu.collision import create_collision_matrix_kernel
 from phono3py_gpu.harmonic import prepare_phonons
@@ -61,36 +61,47 @@ class GPUCalculatorMixin:
         self.q_batch_stats = dict(q_batches=0, triplet_batches=0, max_q_per_launch=0)
         solver.q_batch_stats = self.q_batch_stats
         self.multi_gpu_stats = None
-        unsupported = (
-            self._pp.nac_q_direction is not None
-            or (
-                collision
-                and (solver._read_pp or solver._is_full_pp or on_grid_point is not None)
-            )
-            or (
-                not collision
-                and (self._read_gamma or solver._requires_full_gamma_path())
-            )
-        )
+        reason = ""
+        if self._pp.nac_q_direction is not None:
+            reason = "directional NAC"
+        elif collision and on_grid_point is not None:
+            reason = "per-q output or callback"
+        elif solver._read_pp:
+            reason = "reading PP"
+        elif solver._is_full_pp:
+            reason = "full PP requested"
+        elif not collision and self._read_gamma:
+            reason = "reading linewidths"
+        elif not collision and solver._requires_full_gamma_path():
+            reason = "per-q scattering options"
+        method = "WTE" if self._velocity_solver.wte else "BTE"
+        stage = f"{method}-{'LBTE' if collision else 'RTA'} scattering"
         ids = devices()
         indices = list(self._get_grid_point_indices())
         if collision and indices:
             self._pp.delete_interaction_strength()
-        if len(ids) > 1 and not unsupported and indices:
+        if len(ids) > 1 and not reason and indices:
             if collision:
                 _, _, shape, _ = collision_layout(solver)
                 bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
                 requested = batch_size(bytes_per_q, maximum=max(1, requested))
-            return iterate_multi_gpu(
+            iterate_multi_gpu(
                 self, solver, ids, indices, max(1, requested), collision, on_grid_point
             )
-        if len(ids) > 1 and self._log_level:
-            print(
-                "GPU workers: using the primary GPU for requested file/state options."
-            )
-        if requested <= 1 or unsupported:
+            if self._log_level:
+                per_device = self.multi_gpu_stats["per_device"]
+                used = [dev for dev in ids if per_device[dev]["q_points"]]
+                report_devices(stage, used)
+            return
+        if self._log_level and indices:
+            if collision or not self._read_gamma or solver.use_ave_pp:
+                note = f" of {len(ids)} visible GPUs ({reason})" if len(ids) > 1 else ""
+                report_devices(stage, ids[:1], note)
+        if requested <= 1 or reason:
             if requested > 1 and self._log_level:
-                print("GPU q batching: using per-q path for the requested options.")
+                print(
+                    "phono3py-gpu: using the per-q path for the requested options."
+                )
             if collision:
                 return self._iterate_lbte_points(indices, on_grid_point)
             return super()._iterate_grid_points(on_grid_point)
@@ -102,7 +113,7 @@ class GPUCalculatorMixin:
             selected = indices[start : start + requested]
             gps = self._kappa_settings.grid_points[selected]
             if self._log_level:
-                print("GPU batch: %d q points." % len(gps), flush=True)
+                print("phono3py-gpu: GPU batch: %d q points." % len(gps), flush=True)
             results = compute_q_batch(
                 solver,
                 gps,
@@ -139,7 +150,15 @@ class GPUCalculatorMixin:
 
 
 class GPURTACalculator(GPUCalculatorMixin, RTACalculator):
-    pass
+    def _finalize(self):
+        if self._log_level:
+            stage = (
+                "WTE-RTA mode contributions"
+                if self._velocity_solver.wte
+                else "BTE-RTA conductivity sum"
+            )
+            report_devices(stage, [cupy().cuda.runtime.getDevice()])
+        super()._finalize()
 
 
 class GPULBTECalculator(GPUCalculatorMixin, LBTECalculator):
@@ -175,8 +194,6 @@ def make_rta(
     wte: bool = False,
 ) -> RTACalculator:
     """Build an RTACalculator from variant component factories."""
-    from phono3py_gpu.backend import cupy
-
     cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
@@ -246,8 +263,6 @@ def make_lbte(
     wte: bool = False,
 ) -> LBTECalculator:
     """Build an LBTECalculator from variant component factories."""
-    from phono3py_gpu.backend import cupy
-
     cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
@@ -270,7 +285,7 @@ def make_lbte(
         interaction,
         collision,
         engine=engine,
-        retain_pp=os.environ.get("PHONO3PY_GPU_RETAIN_PP", "1") != "0",
+        retain_pp=os.environ.get("PHONO3PY_GPU_RETAIN_PP", "0") != "0",
         sigmas=config.sigmas,
         sigma_cutoff=config.sigma_cutoff,
         temperatures=config.temperatures,
@@ -280,6 +295,7 @@ def make_lbte(
         log_level=config.log_level,
     )
     colmat_kernel = create_collision_matrix_kernel(
+        wte=wte,
         kappa_settings=kappa_settings,
         frequencies=frequencies,
         degenerate_ids=interaction.phonons.degenerate_ids,
