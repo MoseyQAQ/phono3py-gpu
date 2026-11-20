@@ -2,9 +2,9 @@
 
 English | [简体中文](README_CN.md)
 
-- **A phono3py plugin** that works with your existing input files, CLI commands, and Python scripts.
+- **A phono3py plugin** that works with your existing phono3py workflows.
 - **Single- and multi-GPU acceleration** for lattice thermal conductivity on NVIDIA GPUs.
-- **10–50× speedups in selected benchmarks**, from about 10× for Si BTE-RTA (initialization and transport) to 50× for the scattering stage of an ABO LBTE calculation.
+- **10–50× speedups in selected benchmarks**.
 
 ## Installation
 
@@ -105,8 +105,6 @@ CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 G
 | AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 78.2 | 61.0 | 46.5 |
 | ABO · LBTE | 60 | 6×6×5 | 441.7 | 14.7 | | |
 | ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 10.9 | | |
-
-In a separate ABO LBTE benchmark on a 6×6×6 mesh, the scattering stage took 734.7 s on 4 CPU threads and 14.6 s on one V100 (50.3×).
 
 ## Help and contributing
 
