@@ -77,11 +77,12 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
         pp.set_grid_point(int(grid_points[index]))
         counts[index] = len(pp.get_triplets_at_q()[0])
     groups = [indices[i : i + q_batch] for i in range(0, len(indices), q_batch)]
+    final_group = groups[-1]
     groups.sort(key=lambda group: sum(counts[i] for i in group), reverse=True)
     tasks, results = queue.Queue(), queue.Queue()
     last = indices[-1]
     for group in groups:
-        tasks.put((group, grid_points[group], last in group))
+        tasks.put((group, grid_points[group], group is final_group))
     options = dict(
         sigmas=solver._sigmas,
         sigma_cutoff=solver._sigma_cutoff,
@@ -230,7 +231,9 @@ def _worker():
             _, gps, last = task
             solver.q_batch_stats = dict(triplet_batches=0, max_q_per_launch=0)
             start = time.perf_counter()
-            answers = compute_q_batch(solver, gps, collision=payload["collision"])
+            answers = compute_q_batch(
+                solver, gps, collision=payload["collision"], last_batch=last
+            )
             state = (
                 (pp.interaction_strength, pp.zero_value_positions)
                 if last and payload["collision"] and solver.retain_pp
