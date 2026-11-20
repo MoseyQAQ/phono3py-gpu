@@ -79,8 +79,14 @@ def register_cpu_wte():
     "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
 )
 @pytest.mark.parametrize("sigma", [None, 0.1])
-@pytest.mark.parametrize("q_batch", [1, 4])
-def test_conductivity(si, lbte, wte, sigma, q_batch, monkeypatch):
+@pytest.mark.parametrize("q_batch,streamed", [(1, False), (4, False), (4, True)])
+def test_conductivity(si, lbte, wte, sigma, q_batch, streamed, monkeypatch):
+    if streamed:
+        # Exercise multiple initial-band tiles on the small CPU reference.
+        monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
+        monkeypatch.setattr("phono3py_gpu.interaction.initial_band_block", lambda *_: 2)
+        monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: [0])
+
     monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
     if wte:
         register_cpu_wte()
@@ -105,11 +111,13 @@ def test_conductivity(si, lbte, wte, sigma, q_batch, monkeypatch):
         results.append(ph.thermal_conductivity)
     cpu, gpu = results
     visible = devices()
-    if len(visible) > 1:
+    if len(visible) > 1 and not streamed:
         assert gpu.multi_gpu_stats["devices"] == visible
     else:
         assert gpu.multi_gpu_stats is None
-    if q_batch > 1:
+    if streamed:
+        assert gpu.q_batch_stats["max_q_per_launch"] == 1
+    elif q_batch > 1:
         assert gpu.q_batch_stats["max_q_per_launch"] > 1
     np.testing.assert_allclose(gpu.gamma, cpu.gamma, rtol=1e-7, atol=1e-11)
     np.testing.assert_allclose(

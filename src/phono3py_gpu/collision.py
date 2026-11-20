@@ -13,6 +13,53 @@ from phono3py_gpu.backend import cupy, eigh, host
 from phono3py_gpu.integration import average_axis
 
 
+def eigh_collision(matrix):
+    """Diagonalize a host FP64 matrix using a single device matrix buffer."""
+    from cupy_backends.cuda.libs import cublas, cusolver
+
+    cp = cupy()
+    n = len(matrix)
+    vectors = cp.empty((n, n), dtype=cp.float64, order="F")
+    for start in range(0, n, 256):
+        vectors[start : start + 256] = cp.asarray(matrix[start : start + 256])
+    values = cp.empty(n, dtype=cp.float64)
+    info = cp.empty((), dtype=cp.int32)
+    params = cusolver.createParams()
+    dtype = cp.cuda.runtime.CUDA_R_64F
+    try:
+        args = (
+            cp.cuda.Device().cusolver_handle,
+            params,
+            cusolver.CUSOLVER_EIG_MODE_VECTOR,
+            cublas.CUBLAS_FILL_MODE_LOWER,
+            n,
+            dtype,
+            vectors.data.ptr,
+            n,
+            dtype,
+            values.data.ptr,
+            dtype,
+        )
+        device_bytes, host_bytes = cusolver.xsyevd_bufferSize(*args)
+        cp.get_default_memory_pool().free_all_blocks()
+        work = cp.empty(device_bytes, dtype=cp.uint8)
+        cpu_work = np.empty(host_bytes, dtype=np.uint8)
+        cusolver.xsyevd(
+            *args,
+            work.data.ptr,
+            device_bytes,
+            cpu_work.ctypes.data,
+            host_bytes,
+            info.data.ptr,
+        )
+        status = int(info.get())
+        if status:
+            raise np.linalg.LinAlgError(f"cuSOLVER Xsyevd failed with info={status}.")
+    finally:
+        cusolver.destroyParams(params)
+    return values, vectors
+
+
 class GPUCollisionMixin:
     """Device algebra shared by the irreducible and full-mesh kernels."""
 
@@ -91,12 +138,19 @@ class GPUCollisionMixin:
                 self._solve_distributed_step(s, t, solver, weights)
                 yield s, t
                 continue
-            matrix = cp.asarray(self._collision_matrix[s, t].reshape(n, n))
+            matrix = self._collision_matrix[s, t].reshape(n, n)
             if solver == 7:
-                self._gpu_inverse = cp.linalg.pinv(matrix, rcond=1e-15)
+                self._gpu_inverse = cp.linalg.pinv(cp.asarray(matrix), rcond=1e-15)
                 stored = self._gpu_inverse
             else:
-                self._gpu_eigenvalues, self._gpu_eigenvectors = eigh(matrix)
+                if matrix.nbytes >= 256 * 2**20:
+                    self._gpu_eigenvalues, self._gpu_eigenvectors = eigh_collision(
+                        matrix
+                    )
+                else:
+                    self._gpu_eigenvalues, self._gpu_eigenvectors = eigh(
+                        cp.asarray(matrix)
+                    )
                 self._collision_eigenvalues[s, t] = host(self._gpu_eigenvalues)
                 stored = (
                     self._gpu_eigenvectors.T
@@ -110,8 +164,9 @@ class GPUCollisionMixin:
             num_mesh = int(np.prod(self._kappa_settings.mesh_numbers))
             self._kappa[s, t] /= num_mesh
             self._kappa_RTA[s, t] /= num_mesh
+            del stored
+            self._gpu_eigenvectors = self._gpu_eigenvalues = self._gpu_inverse = None
             yield s, t
-        self._gpu_eigenvectors = self._gpu_eigenvalues = self._gpu_inverse = None
 
     def _solve_distributed_step(self, sigma, temperature, solver, weights):
         from phono3py_gpu.eigensolver import DistributedEigh

@@ -48,6 +48,27 @@ def average_axis(values, ids, axis, minimum=False):
         values[tuple(key)] = reduced
 
 
+def channel_bounds(frequencies, vertices):
+    """Extrema over all tetrahedron vertices, reused by the initial-band tiles."""
+    cp = cupy()
+    nt, _, nth, _ = vertices.shape
+    nb = frequencies.shape[1]
+    bounds = cp.empty((4, nt, nb, nb), dtype=cp.float64)
+    kernel("tetrahedron.cu", "channel_bounds")(
+        ((nt * nb * nb + 127) // 128,),
+        (128,),
+        (
+            bounds,
+            frequencies,
+            cp.asarray(vertices),
+            np.int32(nt),
+            np.int32(nb),
+            np.int32(nth),
+        ),
+    )
+    return bounds
+
+
 def weights(
     pp,
     triplets,
@@ -57,6 +78,7 @@ def weights(
     sigma_cutoff=None,
     collision=False,
     vertices=None,
+    bounds=None,
 ):
     """Return device (g, g_zero), in the upstream channel and band order."""
     cp = cupy()
@@ -107,6 +129,7 @@ def weights(
                 np.int32(vertices.shape[2]),
                 np.int32(nc),
                 np.int32(nf if f0.ndim == 2 else 0),
+                bounds if bounds is not None else np.uint64(0),
             ),
         )
     if pp.average_degenerate_weights and sigma is None:

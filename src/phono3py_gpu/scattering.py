@@ -12,7 +12,7 @@ from phono3py.phonon3.imag_self_energy import ImagSelfEnergy
 from phonopy.physical_units import get_physical_units
 
 from phono3py_gpu.backend import cupy, host, kernel
-from phono3py_gpu.integration import weights
+from phono3py_gpu.integration import channel_bounds, weights
 
 
 def average_initial(values, pp, gp):
@@ -88,33 +88,61 @@ def interaction_batches(
             sigma_cutoff=sigma_cutoff,
             filename=filename,
         )
-    for start in range(0, len(triplets), engine.batch_size):
-        selected = triplets[start : start + engine.batch_size]
-        g, zero = weights(
-            pp,
-            selected,
-            engine.frequencies,
-            engine.frequencies[gp, cp.asarray(pp.band_indices)],
-            sigma,
-            sigma_cutoff,
-            collision,
-            vertices=engine.tetrahedron.vertices(selected) if sigma is None else None,
-        )
-        if loaded_zero is not None and not collision:
-            expected_zero = loaded_zero[start : start + len(selected)]
-            if not cp.array_equal(zero, cp.asarray(expected_zero)):
-                raise ValueError("Inconsistency found in g_zero.")
-        if loaded is not None:
-            strength = cp.asarray(loaded[start : start + len(selected)])
-        elif averaged is not None:
-            shape = (len(selected), len(pp.band_indices), engine.nb, engine.nb)
-            strength = cp.broadcast_to(
-                cp.asarray(averaged)[None, :, None, None] / np.prod(pp.mesh_numbers),
-                shape,
+    bands = pp.band_indices
+    # A streamed batch shares one reciprocal FC3 across all its initial-band tiles.
+    triplet_step = 1 if engine.streamed else engine.batch_size
+    band_step = engine.band_block if engine.streamed else len(bands)
+    for start in range(0, len(triplets), triplet_step):
+        batch = slice(start, start + triplet_step)
+        selected = triplets[batch]
+        vertices = engine.tetrahedron.vertices(selected) if sigma is None else None
+        bounds = None
+        tensor = None
+        if engine.streamed:
+            if vertices is not None:
+                bounds = channel_bounds(engine.frequencies, vertices)
+            if (
+                loaded is None
+                and averaged is None
+                and pp.constant_averaged_interaction is None
+            ):
+                tensor = engine.fourier.components(selected[0])
+        for first in range(0, len(bands), band_step):
+            block = slice(first, first + band_step)
+            ids = bands[block]
+            g, zero = weights(
+                pp,
+                selected,
+                engine.frequencies,
+                engine.frequencies[gp, cp.asarray(ids)],
+                sigma,
+                sigma_cutoff,
+                collision,
+                vertices=vertices,
+                bounds=bounds,
             )
-        else:
-            strength = engine.compute(selected, None if full else zero)
-        yield start, selected, g, zero, strength
+            if loaded is not None:
+                if loaded_zero is not None and not collision:
+                    if not cp.array_equal(zero, cp.asarray(loaded_zero[batch, block])):
+                        raise ValueError("Inconsistency found in g_zero.")
+                strength = cp.asarray(loaded[batch, block])
+            elif averaged is not None:
+                value = cp.asarray(averaged[block])[:, None, None]
+                strength = cp.broadcast_to(value / np.prod(pp.mesh_numbers), zero.shape)
+            elif pp.constant_averaged_interaction is not None:
+                strength = cp.full(
+                    zero.shape,
+                    pp.constant_averaged_interaction / np.prod(pp.mesh_numbers),
+                )
+            elif engine.streamed:
+                strength = engine.project_slice(
+                    tensor, selected[0], ids, None if full else zero[0]
+                )[None]
+                strength *= pp.unit_conversion_factor
+            else:
+                strength = engine.compute(selected, None if full else zero)
+            yield start, selected, block, g, zero, strength
+        del tensor
 
 
 class GPUScatteringSolver(RTAScatteringSolver):
@@ -146,9 +174,12 @@ class GPUScatteringSolver(RTAScatteringSolver):
         average = cp.zeros(nb0) if self._is_full_pp or self._use_const_ave_pp else None
         if self._use_ave_pp and averaged_pp_interaction is None:
             raise ValueError("use_ave_pp requires averaged_pp_interaction.")
+        if self._store_pp:
+            shape = (len(triplets), nb0, self.engine.nb, self.engine.nb)
+            saved = np.empty(shape, dtype=np.float64)
+            saved_zero = np.empty(shape, dtype=np.int8)
         for j, sigma in enumerate(self._sigmas):
-            saved, saved_zero = [], []
-            for start, selected, g, zero, strength in interaction_batches(
+            for start, selected, block, g, zero, strength in interaction_batches(
                 self.engine,
                 sigma,
                 self._sigma_cutoff,
@@ -163,7 +194,7 @@ class GPUScatteringSolver(RTAScatteringSolver):
                     np.all(pp.bz_grid.addresses[selected].sum(axis=1) == 0, axis=1)
                 )
                 if average is not None and j == 0:
-                    average += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
+                    average[block] += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
                         axis=0
                     ) / self.engine.nb**2
                 for k, temperature in enumerate(self._temperatures):
@@ -176,19 +207,21 @@ class GPUScatteringSolver(RTAScatteringSolver):
                         self._occupations[k],
                     )
                     weighted = values.sum(axis=(2, 3)) * w[:, None]
-                    gamma[j, k] += weighted.sum(axis=0)
+                    gamma[j, k, block] += weighted.sum(axis=0)
                     if self._is_N_U:
-                        normal[j, k] += (weighted * is_normal[:, None]).sum(axis=0)
-                        umklapp[j, k] += (weighted * (~is_normal)[:, None]).sum(axis=0)
+                        normal[j, k, block] += (weighted * is_normal[:, None]).sum(
+                            axis=0
+                        )
+                        umklapp[j, k, block] += (weighted * (~is_normal)[:, None]).sum(
+                            axis=0
+                        )
                     if detail is not None:
-                        detail[k, start:end] = host(values)
-                if self._store_pp:
-                    saved.append(host(strength))
-                    saved_zero.append(host(zero))
-            if self._store_pp:
-                pp.set_interaction_strength(
-                    np.concatenate(saved), g_zero=np.concatenate(saved_zero)
-                )
+                        detail[k, start:end, block] = host(values)
+                if self._store_pp and j == ns - 1:
+                    saved[start:end, block] = host(strength)
+                    saved_zero[start:end, block] = host(zero)
+        if self._store_pp:
+            pp.set_interaction_strength(saved, g_zero=saved_zero)
         for array in (gamma, normal, umklapp):
             average_initial(array, pp, grid_point)
         self._gamma_N = host(normal) if self._is_N_U else None
@@ -247,11 +280,13 @@ class GPUCollisionSolver(LBTECollisionSolver):
         target_triplets = cp.asarray(gp2tp[targets])
         target_swapped = cp.asarray(swapped[targets])
         device_rotations = cp.asarray(rotations)
+        if self.retain_pp:
+            shape = (len(triplets), nb0, nb, nb)
+            saved = np.empty(shape, dtype=np.float64)
+            saved_zero = np.empty(shape, dtype=np.int8)
         for j, sigma in enumerate(self._sigmas):
             row = cp.zeros((nt, *rowshape))
-            capture_pp = self.retain_pp and j == ns - 1
-            saved, saved_zero = [], []
-            for start, selected, g, zero, strength in interaction_batches(
+            for start, selected, block, g, zero, strength in interaction_batches(
                 self.engine,
                 sigma,
                 self._sigma_cutoff,
@@ -263,7 +298,7 @@ class GPUCollisionSolver(LBTECollisionSolver):
                 end = start + len(selected)
                 w = cp.asarray(multiplicities[start:end])
                 if average is not None and j == 0:
-                    average += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
+                    average[block] += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
                         axis=0
                     ) / nb**2
                 for k, temperature in enumerate(self._temperatures):
@@ -275,10 +310,13 @@ class GPUCollisionSolver(LBTECollisionSolver):
                         temperature,
                         self._occupations[k],
                     )
-                    gamma[j, k] += (values.sum(axis=(2, 3)) * w[:, None]).sum(axis=0)
+                    gamma[j, k, block] += (values.sum(axis=(2, 3)) * w[:, None]).sum(
+                        axis=0
+                    )
                     if temperature <= 0:
                         continue
-                    reduced = cp.empty((2, len(selected), nb0, nb))
+                    width = strength.shape[1]
+                    reduced = cp.empty((2, len(selected), width, nb))
                     kernel("scattering.cu", "collision_reduce")(
                         ((reduced.size + 127) // 128,),
                         (128,),
@@ -289,22 +327,22 @@ class GPUCollisionSolver(LBTECollisionSolver):
                             self._inv_sinh[k],
                             cp.asarray(selected),
                             np.int32(len(selected)),
-                            np.int32(nb0),
+                            np.int32(width),
                             np.int32(nb),
                             np.float64(unit),
                         ),
                     )
                     kernel("scattering.cu", "collision_rows")(
-                        ((row[k].size + 127) // 128,),
+                        ((row[k, block].size + 127) // 128,),
                         (128,),
                         (
-                            row[k],
+                            row[k, block],
                             reduced,
                             target_triplets,
                             target_swapped,
                             device_rotations,
                             np.int32(len(selected)),
-                            np.int32(nb0),
+                            np.int32(width),
                             np.int32(nb),
                             np.int32(targets.shape[0]),
                             np.int32(targets.shape[1]),
@@ -313,14 +351,12 @@ class GPUCollisionSolver(LBTECollisionSolver):
                             np.int32(1),
                         ),
                     )
-                if capture_pp:
-                    saved.append(host(strength))
-                    saved_zero.append(host(zero))
+                if self.retain_pp and j == ns - 1:
+                    saved[start:end, block] = host(strength)
+                    saved_zero[start:end, block] = host(zero)
             rows[j] = host(row)
-            if capture_pp:
-                pp.set_interaction_strength(
-                    np.concatenate(saved), g_zero=np.concatenate(saved_zero)
-                )
+        if self.retain_pp:
+            pp.set_interaction_strength(saved, g_zero=saved_zero)
         average_initial(gamma, pp, grid_point)
         return LBTECollisionResult(
             gamma=host(gamma),

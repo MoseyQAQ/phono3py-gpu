@@ -48,6 +48,8 @@ This requires the CUDA 12 `libcusolverMg.so.11` library to be available to the d
 
 The `mg` solver is optional and can be slower for small matrices. Use `PHONO3PY_GPU_LBTE_SOLVER=single` for the default solver.
 
+Large primitive cells (at least 192 phonon branches) automatically process a triplet in tiles of initial branches with the default Fourier method. The available GPU memory sets the tile width. Each tile includes every final-branch pair. Explicit q symmetrization uses the full projection.
+
 ## Performance tuning
 
 The defaults are suitable for getting started. Set these environment variables before starting a calculation:

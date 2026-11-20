@@ -650,11 +650,33 @@ static __device__ double _I_33(const double omega, const double vertices_omegas[
 
 static __device__ double _I_4(void) { return 0.0; }
 
+// For a band pair, every initial frequency outside these extrema has
+// exactly zero support in the corresponding tetrahedron channel.
+extern "C" __global__ void channel_bounds(
+    double* bounds, const double* freq, const long long* vertices,
+    int nt, int nb, int nth) {
+    long long idx = (long long)blockIdx.x*blockDim.x + threadIdx.x;
+    long long pairs = (long long)nt*nb*nb;
+    if (idx >= pairs) return;
+    int t=idx/(nb*nb), j=(idx/nb)%nb, k=idx%nb;
+    const long long* first = vertices + (long long)t*2*nth*4;
+    double x0 = fmax(freq[first[0]*nb+j], 0.);
+    double y0 = fmax(freq[first[nth*4]*nb+k], 0.);
+    double lo=x0+y0, hi=lo, dlo=y0-x0, dhi=dlo;
+    for (int v=1; v<nth*4; ++v) {
+        double x = fmax(freq[first[v]*nb+j], 0.);
+        double y = fmax(freq[first[nth*4+v]*nb+k], 0.);
+        lo=fmin(lo,x+y); hi=fmax(hi,x+y);
+        dlo=fmin(dlo,y-x); dhi=fmax(dhi,y-x);
+    }
+    bounds[idx]=lo; bounds[pairs+idx]=hi;
+    bounds[2*pairs+idx]=dlo; bounds[3*pairs+idx]=dhi;
+}
 // vertices: (triplet, 2, tetrahedron, 4); each work item is one band triple.
 extern "C" __global__ void weights(
     double* out, signed char* zero, const double* freq, const double* f0,
     const long long* vertices, int nt, int nb0, int nb, int nth, int nc,
-    int frequency_stride) {
+    int frequency_stride, const double* bounds) {
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     long long size = (long long)nt*nb0*nb*nb;
     if (idx >= size) return;
@@ -662,7 +684,17 @@ extern "C" __global__ void weights(
     int t = idx/(nb0*nb*nb);
     double total[3] = {0., 0., 0.};
     bool active = false;
+    double w = f0[t*frequency_stride+b];
+    long long pairs = (long long)nt*nb*nb;
+    long long pair = ((long long)t*nb+j)*nb+k;
     for (int ch=0; ch<3; ++ch) {
+        if (bounds) {
+            double lo, hi;
+            if (ch==0) { lo=bounds[pair]; hi=bounds[pairs+pair]; }
+            else if (ch==1) { lo=bounds[2*pairs+pair]; hi=bounds[3*pairs+pair]; }
+            else { lo=-bounds[3*pairs+pair]; hi=-bounds[2*pairs+pair]; }
+            if (w<lo || w>hi) continue;
+        }
         for (int h=0; h<nth; ++h) {
             double v[4];
             for (int l=0; l<4; ++l) {
@@ -673,7 +705,6 @@ extern "C" __global__ void weights(
                 v[l] = ch==0 ? x+y : (ch==1 ? -x+y : x-y);
             }
             int center = sort_omegas(v);
-            double w = f0[t*frequency_stride+b];
             if (w>=v[0] && w<=v[3]) active=true;
             int region = w<v[0] ? 0 : w<v[1] ? 1 : w<v[2] ? 2 : w<v[3] ? 3 : 4;
             total[ch] += _I(region, center, w, v)*_g(region, w, v);
