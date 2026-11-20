@@ -2,7 +2,9 @@
 
 English | [简体中文](README_CN.md)
 
-Calculate lattice thermal conductivity on NVIDIA GPUs using your existing phono3py inputs and workflow.
+- **A phono3py plugin** that works with your existing input files, CLI commands, and Python scripts.
+- **Single- and multi-GPU acceleration** for lattice thermal conductivity on NVIDIA GPUs.
+- **10–50× speedups in selected benchmarks**, from about 10× for Si BTE-RTA (initialization and transport) to 50× for the scattering stage of an ABO LBTE calculation.
 
 ## Installation
 
@@ -45,7 +47,7 @@ If a compatible CuPy is already installed, use `pip3 install .` instead.
 # Input preparation: https://phonopy.github.io/phono3py/
 
 # BTE-RTA at 300 K using GPU
-phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300 # "--tt GPU"
+phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 Results are written to a `kappa-*.hdf5` file in the calculation directory.
@@ -88,7 +90,7 @@ WTE is included; no separate phono3py-wte installation is needed.
 Calculations use all visible GPUs on the same machine. Set `CUDA_VISIBLE_DEVICES` before starting to select GPUs; for example, to use GPUs 0 and 1:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
+CUDA_VISIBLE_DEVICES=0,1 phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scripts. For LBTE, the global solve still uses one GPU by default; see [memory requirements and solver options](docs/advanced.md#out-of-memory).
@@ -103,6 +105,8 @@ CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 G
 | AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 78.2 | 61.0 | 46.5 |
 | ABO · LBTE | 60 | 6×6×5 | 441.7 | 14.7 | | |
 | ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 10.9 | | |
+
+In a separate ABO LBTE benchmark on a 6×6×6 mesh, the scattering stage took 734.7 s on 4 CPU threads and 14.6 s on one V100 (50.3×).
 
 ## Help and contributing
 
