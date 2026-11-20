@@ -93,6 +93,10 @@ def test_interleaved_collision_rows(si, reducible):
     strength = pp.interaction_strength.copy()
     last_triplets = pp.get_triplets_at_q()[0].copy()
     solver.q_batch_stats = dict(triplet_batches=0, max_q_per_launch=0)
+    pp.delete_interaction_strength()
+    compute_q_batch(solver, gps[:1], collision=True, last_batch=False)
+    assert pp.interaction_strength is None
+    assert pp.zero_value_positions is None
     results = compute_q_batch(solver, gps, collision=True)
     assert solver.q_batch_stats["max_q_per_launch"] == 3
     for actual, reference in zip(results, expected, strict=True):
@@ -115,7 +119,18 @@ def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport
     monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP", raising=False)
     ph = deepcopy(si)
     ph.mesh_numbers = [3, 3, 3]
+    ph.sigmas = [None, 0.1]
     ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    saved_at = []
+    set_strength = type(pp).set_interaction_strength
+
+    def record_snapshot(interaction, strength, g_zero=None):
+        if strength is not None:
+            saved_at.append(interaction.get_triplets_at_q()[0][0, 0])
+        set_strength(interaction, strength, g_zero=g_zero)
+
+    monkeypatch.setattr(type(pp), "set_interaction_strength", record_snapshot)
     options = dict(
         temperatures=[100.0, 300.0],
         transport_type=transport,
@@ -124,13 +139,15 @@ def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport
     )
     ph.run_thermal_conductivity(**options)
     ref = ph.thermal_conductivity
-    pp = ph.phph_interaction
+    assert saved_at == [ref.grid_points[-1]]
     assert pp.interaction_strength is not None
     assert pp.zero_value_positions is not None
 
     monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "0")
+    saved_at.clear()
     ph.run_thermal_conductivity(**options)
     result = ph.thermal_conductivity
+    assert saved_at == []
     assert pp.interaction_strength is None
     assert pp.zero_value_positions is None
     np.testing.assert_allclose(result.kappa, ref.kappa, rtol=1e-10, atol=1e-12)

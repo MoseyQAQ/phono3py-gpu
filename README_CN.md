@@ -85,6 +85,8 @@ print(ph3.thermal_conductivity.kappa)
 
 插件已包含 WTE 功能，无需另外安装 phono3py-wte。
 
+如果只算热导率，不需要读取三声子相互作用强度，可以设置 `PHONO3PY_GPU_RETAIN_PP=0`，详见[进阶文档](docs/advanced.md#performance-tuning)。
+
 ## 使用多张 GPU
 
 计算使用同一台机器上所有可见的 GPU。如需指定设备，在启动前设置 `CUDA_VISIBLE_DEVICES`；例如使用 GPU 0 和 1：

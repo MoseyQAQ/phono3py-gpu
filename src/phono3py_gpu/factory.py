@@ -74,6 +74,8 @@ class GPUCalculatorMixin:
         )
         ids = devices()
         indices = list(self._get_grid_point_indices())
+        if collision and indices:
+            self._pp.delete_interaction_strength()
         if len(ids) > 1 and not unsupported and indices:
             if collision:
                 _, _, shape, _ = collision_layout(solver)
@@ -89,6 +91,8 @@ class GPUCalculatorMixin:
         if requested <= 1 or unsupported:
             if requested > 1 and self._log_level:
                 print("GPU q batching: using per-q path for the requested options.")
+            if collision:
+                return self._iterate_lbte_points(indices, on_grid_point)
             return super()._iterate_grid_points(on_grid_point)
         if collision:
             _, _, shape, _ = collision_layout(solver)
@@ -99,7 +103,12 @@ class GPUCalculatorMixin:
             gps = self._kappa_settings.grid_points[selected]
             if self._log_level:
                 print("GPU batch: %d q points." % len(gps), flush=True)
-            results = compute_q_batch(solver, gps, collision=collision)
+            results = compute_q_batch(
+                solver,
+                gps,
+                collision=collision,
+                last_batch=start + len(selected) == len(indices),
+            )
             self.q_batch_stats["q_batches"] += 1
             for offset, (index, result) in enumerate(
                 zip(selected, results, strict=True)
@@ -134,22 +143,25 @@ class GPURTACalculator(GPUCalculatorMixin, RTACalculator):
 
 
 class GPULBTECalculator(GPUCalculatorMixin, LBTECalculator):
-    def _iterate_grid_points(self, on_grid_point):
+    def _iterate_lbte_points(self, indices, on_grid_point):
+        """Expose each callback's PP, retaining only the final requested snapshot."""
         solver = self._collision_solver
-        if solver.retain_pp or on_grid_point is None:
-            return super()._iterate_grid_points(on_grid_point)
-
-        # A writer or user callback can read the current q point's pp.
-        def consume_pp(index):
-            on_grid_point(index)
-            self._pp.delete_interaction_strength()
-
-        solver.retain_pp = True
+        retain_final = solver.retain_pp
         try:
-            return super()._iterate_grid_points(consume_pp)
+            for count, index in enumerate(indices, 1):
+                keep = retain_final and count == len(indices)
+                solver.retain_pp = keep or on_grid_point is not None
+                index = int(index)
+                self._compute_at_grid_point(index)
+                self._grid_point_count = count
+                if on_grid_point is not None:
+                    on_grid_point(index)
+                    if not keep:
+                        self._pp.delete_interaction_strength()
         finally:
-            solver.retain_pp = False
-            self._pp.delete_interaction_strength()
+            solver.retain_pp = retain_final
+            if not retain_final:
+                self._pp.delete_interaction_strength()
 
 
 def _validate_wte(interaction, config, wte):

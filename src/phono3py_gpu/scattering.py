@@ -249,6 +249,7 @@ class GPUCollisionSolver(LBTECollisionSolver):
         device_rotations = cp.asarray(rotations)
         for j, sigma in enumerate(self._sigmas):
             row = cp.zeros((nt, *rowshape))
+            capture_pp = self.retain_pp and j == ns - 1
             saved, saved_zero = [], []
             for start, selected, g, zero, strength in interaction_batches(
                 self.engine,
@@ -312,11 +313,11 @@ class GPUCollisionSolver(LBTECollisionSolver):
                             np.int32(1),
                         ),
                     )
-                if self.retain_pp:
+                if capture_pp:
                     saved.append(host(strength))
                     saved_zero.append(host(zero))
             rows[j] = host(row)
-            if self.retain_pp:
+            if capture_pp:
                 pp.set_interaction_strength(
                     np.concatenate(saved), g_zero=np.concatenate(saved_zero)
                 )

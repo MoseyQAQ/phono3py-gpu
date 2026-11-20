@@ -122,7 +122,8 @@ def test_pp_roundtrip(si, tmp_path, monkeypatch):
     )
 
 
-def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch):
+@pytest.mark.parametrize("transport", ["GPU", "WTE-GPU"])
+def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch, transport):
     monkeypatch.chdir(tmp_path)
     ph = deepcopy(si)
     ph.mesh_numbers = [3, 3, 3]
@@ -131,7 +132,7 @@ def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch):
         monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", retain)
         ph.run_thermal_conductivity(
             temperatures=[300.0],
-            transport_type="GPU",
+            transport_type=transport,
             is_LBTE=True,
             pinv_solver=3,
             write_pp=True,
@@ -146,6 +147,20 @@ def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch):
         strength, zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="0")
         np.testing.assert_array_equal(strength, ref)
         np.testing.assert_array_equal(zero, ref_zero)
+
+    # The last requested point can differ from the last point of the full grid.
+    requested = ph.thermal_conductivity.grid_points[[-1, 1]]
+    monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP")
+    ph.run_thermal_conductivity(
+        temperatures=[300.0],
+        transport_type=transport,
+        is_LBTE=True,
+        grid_points=requested,
+        pinv_solver=3,
+    )
+    ref, ref_zero = read_pp_from_hdf5(ph.mesh_numbers, requested[-1], filename="1")
+    np.testing.assert_allclose(pp.interaction_strength, ref, rtol=1e-9, atol=1e-25)
+    np.testing.assert_array_equal(pp.zero_value_positions, ref_zero)
 
 
 def test_constant_interaction_and_partial_bands(si):

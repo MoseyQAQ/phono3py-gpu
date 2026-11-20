@@ -29,7 +29,7 @@ def collision_layout(solver):
     )
 
 
-def compute_q_batch(solver, grid_points, collision=False):
+def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
     """Compute a bounded group of q points without per-q device synchronization.
 
     Full/read/averaged pp and detailed file output use the original solver path.
@@ -37,6 +37,7 @@ def compute_q_batch(solver, grid_points, collision=False):
     """
     cp = cupy()
     engine, pp = solver.engine, solver._pp
+    retain_pp = collision and last_batch and solver.retain_pp
     nq, nb0, nb = len(grid_points), len(pp.band_indices), engine.nb
     ns, nt = len(solver._sigmas), len(solver._temperatures)
     triplets, multiplicities, maps, swaps = [], [], [], []
@@ -161,7 +162,7 @@ def compute_q_batch(solver, grid_points, collision=False):
                         np.int32(nq),
                     ),
                 )
-            if collision and solver.retain_pp and j == ns - 1:
+            if retain_pp and j == ns - 1:
                 # Preserve the upstream final-q pp state without retaining
                 # every q's full interaction tensor on the host.
                 last = np.flatnonzero(owner[start:end] == nq - 1)
@@ -171,7 +172,7 @@ def compute_q_batch(solver, grid_points, collision=False):
                     saved_zero.append(host(zero[ids]))
         if collision:
             rows[j] = host(row)
-    if collision and solver.retain_pp:
+    if retain_pp:
         pp.set_interaction_strength(
             np.concatenate(saved), g_zero=np.concatenate(saved_zero)
         )
