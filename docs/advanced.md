@@ -41,7 +41,7 @@ To distribute the global LBTE solve across two GPUs:
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 \
 PHONO3PY_GPU_LBTE_SOLVER=mg \
-phono3py-load --lbte --tt GPU --mesh 9 9 9 --ts 300
+phono3py --lbte --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 This requires the CUDA 12 `libcusolverMg.so.11` library to be available to the dynamic linker. Matrix storage is distributed, but each GPU also needs the workspace requested by the solver. Available memory therefore cannot be estimated by dividing the matrix size by the GPU count. Allocation failures are reported; the solver does not automatically switch to CPU execution.
@@ -63,7 +63,7 @@ Increasing batch sizes raises memory use and may not improve runtime. To try lar
 ```bash
 PHONO3PY_GPU_Q_BATCH_SIZE=8 \
 PHONO3PY_GPU_TRIPLET_BATCH_SIZE=256 \
-phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
+phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 ## Installation and compatibility

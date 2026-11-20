@@ -2,7 +2,9 @@
 
 English | [简体中文](README_CN.md)
 
-Calculate lattice thermal conductivity on NVIDIA GPUs using your existing phono3py inputs and workflow.
+- **A phono3py plugin** that works with your existing phono3py workflows.
+- **Single- and multi-GPU acceleration** for lattice thermal conductivity on NVIDIA GPUs.
+- **10–50× speedups in selected benchmarks**.
 
 ## Installation
 
@@ -45,7 +47,7 @@ If a compatible CuPy is already installed, use `pip3 install .` instead.
 # Input preparation: https://phonopy.github.io/phono3py/
 
 # BTE-RTA at 300 K using GPU
-phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300 # "--tt GPU"
+phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 Results are written to a `kappa-*.hdf5` file in the calculation directory.
@@ -88,7 +90,7 @@ WTE is included; no separate phono3py-wte installation is needed.
 Calculations use all visible GPUs on the same machine. Set `CUDA_VISIBLE_DEVICES` before starting to select GPUs; for example, to use GPUs 0 and 1:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
+CUDA_VISIBLE_DEVICES=0,1 phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scripts. For LBTE, the global solve still uses one GPU by default; see [memory requirements and solver options](docs/advanced.md#out-of-memory).

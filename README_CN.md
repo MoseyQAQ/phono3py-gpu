@@ -2,7 +2,9 @@
 
 [English](README.md) | 简体中文
 
-沿用现有 phono3py 输入文件和工作流，在 NVIDIA GPU 上计算晶格热导率。
+- **phono3py 插件**，可直接沿用现有的 phono3py 工作流。
+- 使用 NVIDIA GPU 加速晶格热导率计算，支持**单卡和多卡并行**。
+- **部分基准算例加速约 10–50 倍**。
 
 ## 安装
 
@@ -45,7 +47,7 @@ pip3 install '.[cuda12]'
 # 输入准备方法：https://phonopy.github.io/phono3py/
 
 # 在 300 K 下使用 GPU 运行 BTE-RTA 计算
-phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300 # "--tt GPU"
+phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 结果写入计算目录中的 `kappa-*.hdf5` 文件。
@@ -88,7 +90,7 @@ print(ph3.thermal_conductivity.kappa)
 计算使用同一台机器上所有可见的 GPU。如需指定设备，在启动前设置 `CUDA_VISIBLE_DEVICES`；例如使用 GPU 0 和 1：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 phono3py-load --br --tt GPU --mesh 9 9 9 --ts 300
+CUDA_VISIBLE_DEVICES=0,1 phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 ```
 
 只用一张卡时设置 `CUDA_VISIBLE_DEVICES=0`。同一设置也适用于 Python 脚本。LBTE 的全局求解默认仍使用一张 GPU，详见[内存要求与求解器选项](docs/advanced.md#out-of-memory)。
