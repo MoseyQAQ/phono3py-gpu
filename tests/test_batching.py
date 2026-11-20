@@ -104,6 +104,42 @@ def test_interleaved_collision_rows(si, reducible):
     np.testing.assert_array_equal(pp.get_triplets_at_q()[0], last_triplets)
 
 
+@pytest.mark.parametrize(
+    "gpu_count,q_batch,transport", [(1, 1, "GPU"), (1, 2, "WTE-GPU"), (2, 2, "GPU")]
+)
+def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport):
+    if cupy().cuda.runtime.getDeviceCount() < gpu_count:
+        pytest.skip("Two CUDA devices required.")
+    monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: list(range(gpu_count)))
+    monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
+    monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP", raising=False)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3, 3, 3]
+    ph.init_phph_interaction()
+    options = dict(
+        temperatures=[100.0, 300.0],
+        transport_type=transport,
+        is_LBTE=True,
+        pinv_solver=3,
+    )
+    ph.run_thermal_conductivity(**options)
+    ref = ph.thermal_conductivity
+    pp = ph.phph_interaction
+    assert pp.interaction_strength is not None
+    assert pp.zero_value_positions is not None
+
+    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "0")
+    ph.run_thermal_conductivity(**options)
+    result = ph.thermal_conductivity
+    assert pp.interaction_strength is None
+    assert pp.zero_value_positions is None
+    np.testing.assert_allclose(result.kappa, ref.kappa, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(result.gamma, ref.gamma, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(
+        result.collision_eigenvalues, ref.collision_eigenvalues, rtol=1e-10, atol=1e-12
+    )
+
+
 @pytest.mark.parametrize("gpu_count", [1, 2])
 def test_partial_bands_and_callbacks(si, monkeypatch, gpu_count):
     from phono3py_gpu.factory import GPUCalculatorMixin

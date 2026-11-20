@@ -201,9 +201,12 @@ class GPUScatteringSolver(RTAScatteringSolver):
 class GPUCollisionSolver(LBTECollisionSolver):
     """GPU collision rows using upstream integer symmetry maps."""
 
-    def __init__(self, *args, engine, **kwargs):
+    def __init__(self, *args, engine, retain_pp=True, **kwargs):
         super().__init__(*args, **kwargs)
         self.engine = engine
+        self.retain_pp = retain_pp
+        if not retain_pp:
+            self._pp.delete_interaction_strength()
         self._occupations = [
             occupations(engine.frequencies, t, engine.pp.cutoff_frequency)
             for t in self._temperatures
@@ -309,12 +312,14 @@ class GPUCollisionSolver(LBTECollisionSolver):
                             np.int32(1),
                         ),
                     )
-                saved.append(host(strength))
-                saved_zero.append(host(zero))
+                if self.retain_pp:
+                    saved.append(host(strength))
+                    saved_zero.append(host(zero))
             rows[j] = host(row)
-            pp.set_interaction_strength(
-                np.concatenate(saved), g_zero=np.concatenate(saved_zero)
-            )
+            if self.retain_pp:
+                pp.set_interaction_strength(
+                    np.concatenate(saved), g_zero=np.concatenate(saved_zero)
+                )
         average_initial(gamma, pp, grid_point)
         return LBTECollisionResult(
             gamma=host(gamma),

@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import pytest
 from phono3py.conductivity.build_components import build_rot_grid_points
+from phono3py.file_IO import read_pp_from_hdf5
 
 from phono3py_gpu.collision import create_collision_matrix_kernel
 
@@ -119,6 +120,32 @@ def test_pp_roundtrip(si, tmp_path, monkeypatch):
     np.testing.assert_allclose(
         ph.thermal_conductivity.gamma, gamma, rtol=1e-12, atol=1e-12
     )
+
+
+def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3, 3, 3]
+    ph.init_phph_interaction()
+    for retain in ("1", "0"):
+        monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", retain)
+        ph.run_thermal_conductivity(
+            temperatures=[300.0],
+            transport_type="GPU",
+            is_LBTE=True,
+            pinv_solver=3,
+            write_pp=True,
+            output_filename=retain,
+        )
+        pp = ph.phph_interaction
+        assert (pp.interaction_strength is not None) == (retain == "1")
+        assert (pp.zero_value_positions is not None) == (retain == "1")
+
+    for gp in ph.thermal_conductivity.grid_points:
+        ref, ref_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="1")
+        strength, zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="0")
+        np.testing.assert_array_equal(strength, ref)
+        np.testing.assert_array_equal(zero, ref_zero)
 
 
 def test_constant_interaction_and_partial_bands(si):
