@@ -22,3 +22,18 @@ extern "C" __global__ void masked_projection(
     }
     out[index] = (re*re+im*im)/(f0*f1*f2);
 }
+
+extern "C" __global__ void amplitude_squared(
+    double* out, const double2* amplitude, const signed char* zero,
+    const double* f0, const double* f1, const double* f2, const long long* bands,
+    int nb, long long size, double cutoff) {
+    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= size) return;
+    double x = f0[bands[i/(nb*nb)]], y = f1[(i/nb)%nb], z = f2[i%nb];
+    if ((zero && zero[i]) || x <= cutoff || y <= cutoff || z <= cutoff) {
+        out[i] = 0.;
+    } else {
+        double2 v = amplitude[i];
+        out[i] = (v.x*v.x + v.y*v.y)/(x*y*z);
+    }
+}

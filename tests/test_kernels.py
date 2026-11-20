@@ -56,7 +56,8 @@ def test_interaction(si, sigma):
 
 
 @pytest.mark.parametrize("all_zero", [False, True])
-def test_masked_partial_projection(si, all_zero):
+@pytest.mark.parametrize("streamed", [False, True])
+def test_masked_partial_projection(si, all_zero, streamed):
     """Check skipped amplitudes and non-contiguous band order against upstream."""
     from copy import deepcopy
 
@@ -79,6 +80,8 @@ def test_masked_partial_projection(si, all_zero):
     engine = InteractionKernel(
         pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
     )
+    engine.streamed = streamed
+    engine.band_block = 2
     result = host(engine.compute(triplets, cp.asarray(zero)))
     np.testing.assert_allclose(result, pp.interaction_strength, rtol=1e-9, atol=1e-25)
     assert np.count_nonzero(result[zero != 0]) == 0
@@ -109,7 +112,8 @@ def test_sparse_fc3_packing(fixture, request):
 
 
 @pytest.mark.parametrize("reducible", [False, True])
-def test_collision_batches(si, reducible):
+@pytest.mark.parametrize("streamed", [False, True])
+def test_collision_batches(si, reducible, streamed):
     """Compare unsymmetrized rows, including swapped legs and batch boundaries."""
     from copy import deepcopy
 
@@ -141,6 +145,8 @@ def test_collision_batches(si, reducible):
     engine = InteractionKernel(
         pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
     )
+    engine.streamed = streamed
+    engine.band_block = 2
     for size in (1, 3):
         engine.batch_size = size
         result = GPUCollisionSolver(pp, collision, engine=engine, **options).compute(1)
@@ -293,3 +299,23 @@ def test_nac_variants(nacl, method):
     np.testing.assert_allclose(
         host(gpu.matrices(q[1:], derivative=True)), expected, rtol=2e-6, atol=1e-7
     )
+
+
+def test_band_block_for_free_memory():
+    from phono3py_gpu.interaction import initial_band_block
+
+    nb = 720
+    for width in (1, 2, 4, 8, 16, 32):
+        free = 2 * (16 * nb**3 + width * 128 * nb**2)
+        assert initial_band_block(nb, free) == width
+        assert initial_band_block(nb, free - 2) == max(1, width // 2)
+
+
+def test_collision_eigh_in_place():
+    from phono3py_gpu.collision import eigh_collision
+
+    a = np.random.default_rng(4).normal(size=(259, 259))
+    matrix = a + a.T
+    w, v = map(host, eigh_collision(matrix))
+    np.testing.assert_allclose(w, np.linalg.eigvalsh(matrix), atol=1e-12)
+    np.testing.assert_allclose(matrix @ v, v * w, atol=1e-12)

@@ -38,6 +38,35 @@ def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
     cp = cupy()
     engine, pp = solver.engine, solver._pp
     retain_pp = collision and last_batch and solver.retain_pp
+    if engine.streamed:
+        # Large triplets already fill one launch with a single band tile.
+        answers = []
+        if collision:
+            original_retain_pp = solver.retain_pp
+        try:
+            for index, gp in enumerate(grid_points):
+                if collision:
+                    solver.retain_pp = retain_pp and index == len(grid_points) - 1
+                result = solver.compute(int(gp))
+                tp, w = pp.get_triplets_at_q()[:2]
+                solver.q_batch_stats["triplet_batches"] += len(tp) * len(solver._sigmas)
+                solver.q_batch_stats["max_q_per_launch"] = 1
+                if collision:
+                    answers.append(result)
+                else:
+                    answers.append(
+                        dict(
+                            result=result,
+                            gamma_N=solver.gamma_N,
+                            gamma_U=solver.gamma_U,
+                            triplets=tp,
+                            weights=w,
+                        )
+                    )
+        finally:
+            if collision:
+                solver.retain_pp = original_retain_pp
+        return answers
     nq, nb0, nb = len(grid_points), len(pp.band_indices), engine.nb
     ns, nt = len(solver._sigmas), len(solver._temperatures)
     triplets, multiplicities, maps, swaps = [], [], [], []

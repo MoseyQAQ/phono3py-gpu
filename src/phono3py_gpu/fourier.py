@@ -133,6 +133,46 @@ extern "C" __global__ void assemble(
     }
     out[index] = v;
 }
+// Evaluate each requested r0 permutation directly in the final component layout.
+__device__ double2 component_leg(
+    const double* fc, const long long* offsets, const int* pairs,
+    const signed char* shortest, const double2* phase, const double2 pre,
+    int na, int ns, int i, int j, int k, int cart, int qj, int qk,
+    int leg, int average) {
+    long long atom = ((long long)i*na+j)*na+k;
+    const double2* pj = phase + ((long long)qj*na+i)*ns;
+    const double2* pk = phase + ((long long)qk*na+i)*ns;
+    double re = 0., im = 0.;
+    for (long long p=offsets[atom]; p<offsets[atom+1]; ++p) {
+        if (average && leg && shortest[p]) continue;
+        double2 x = pj[pairs[2*p]], y = pk[pairs[2*p+1]];
+        double w = (average && !leg && shortest[p]) ? 3. : 1.;
+        double v = fc[p*32+cart];
+        re += ((x.x*y.x-x.y*y.y)*w)*v;
+        im += ((x.x*y.y+x.y*y.x)*w)*v;
+    }
+    return make_double2(re*pre.x-im*pre.y, re*pre.y+im*pre.x);
+}
+extern "C" __global__ void transform_components(
+    const double* fc, const long long* offsets, const int* pairs,
+    const signed char* shortest, const double2* phase, const long long* tp,
+    const double2* pre, double2* out, int na, int ns, int average) {
+    long long index = (long long)blockIdx.x*blockDim.x+threadIdx.x;
+    int nb=3*na;
+    if (index >= (long long)nb*nb*nb) return;
+    int x=index/(nb*nb), y=(index/nb)%nb, z=index%nb;
+    int i=x/3, j=y/3, k=z/3, l=x%3, m=y%3, n=z%3;
+    double2 v=component_leg(fc,offsets,pairs,shortest,phase,pre[i],na,ns,
+                            i,j,k,9*l+3*m+n,tp[1],tp[2],0,average);
+    if (average) {
+        double2 w=component_leg(fc,offsets,pairs,shortest,phase,pre[j],na,ns,
+                                j,i,k,9*m+3*l+n,tp[0],tp[2],1,1);
+        double2 u=component_leg(fc,offsets,pairs,shortest,phase,pre[k],na,ns,
+                                k,j,i,9*n+3*m+l,tp[1],tp[0],2,1);
+        v=make_double2(((v.x+w.x)+u.x)/3., ((v.y+w.y)+u.y)/3.);
+    }
+    out[index]=v;
+}
 // Reuse each FC3 block across triplets; phase products are the right GEMM operand.
 extern "C" __global__ void phase_products(
     const int* pairs, const signed char* shortest, const double2* phase,
@@ -254,6 +294,7 @@ class GPUFC3Transform:
             # FP64 FMA is disabled to retain the native summation convention.
             module = cp.RawModule(code=_KERNELS, options=("--fmad=false",))
             phase_kernel = module.get_function("phases")
+            self.components_kernel = module.get_function("transform_components")
             self.kernel = module.get_function("transform")
             self.tiled_kernel = module.get_function("transform_tiled")
             self.assemble = module.get_function("assemble")
@@ -276,6 +317,33 @@ class GPUFC3Transform:
             )
             cp.cuda.get_current_stream().synchronize()
         self.setup_seconds = time.perf_counter() - start
+
+    def components(self, triplet):
+        """One reciprocal FC3 in component order, including all requested origins."""
+        import cupy as cp
+
+        nb = 3 * self.na
+        tensor = cp.empty((nb, nb, nb), dtype=cp.complex128)
+        tp = cp.asarray(triplet, dtype=cp.int64)
+        prephase = cp.exp((2j * np.pi) * (self.origins @ self.qpoints[tp].sum(axis=0)))
+        self.components_kernel(
+            ((tensor.size + 255) // 256,),
+            (256,),
+            (
+                self.fc,
+                self.offsets,
+                self.pairs,
+                self.shortest,
+                self.phase,
+                tp,
+                prephase,
+                tensor,
+                np.int32(self.na),
+                np.int32(self.ns),
+                np.int32(self.average),
+            ),
+        )
+        return tensor
 
     def transform(self, triplets):
         """Transform a batch, returning a device tensor."""

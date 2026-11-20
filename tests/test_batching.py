@@ -203,3 +203,30 @@ def test_partial_bands_and_callbacks(si, monkeypatch, gpu_count):
         results[1].get_gamma_N_U(), results[0].get_gamma_N_U(), strict=True
     ):
         np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-13)
+
+
+@pytest.mark.parametrize("lbte", [False, True])
+def test_band_tiles_preserve_pp_files(si, tmp_path, monkeypatch, lbte):
+    from phono3py.file_IO import read_pp_from_hdf5
+
+    monkeypatch.chdir(tmp_path)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3] * 3
+    ph.init_phph_interaction()
+    options = dict(
+        transport_type="GPU", is_LBTE=lbte, temperatures=[300.0], pinv_solver=3
+    )
+    ph.run_thermal_conductivity(**options, write_pp=True, output_filename="full")
+    ref = ph.thermal_conductivity.gamma.copy()
+    monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
+    monkeypatch.setattr("phono3py_gpu.interaction.initial_band_block", lambda *_: 2)
+    ph.run_thermal_conductivity(**options, write_pp=True, output_filename="tiles")
+    for gp in ph.thermal_conductivity.grid_points:
+        full, full_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="full")
+        tiled, tiled_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="tiles")
+        np.testing.assert_allclose(tiled, full, rtol=1e-9, atol=1e-25)
+        np.testing.assert_array_equal(tiled_zero, full_zero)
+    ph.run_thermal_conductivity(**options, read_pp=True, input_filename="tiles")
+    np.testing.assert_allclose(
+        ph.thermal_conductivity.gamma, ref, rtol=1e-9, atol=1e-12
+    )
