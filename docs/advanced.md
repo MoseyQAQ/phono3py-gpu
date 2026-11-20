@@ -58,6 +58,8 @@ The defaults are suitable for getting started. Set these environment variables b
 | `PHONO3PY_GPU_TRIPLET_BATCH_SIZE` | `64` | Maximum triplets per interaction batch; available memory may reduce it. |
 | `PHONO3PY_GPU_RETAIN_PP` | `1` | GPU LBTE and WTE-LBTE copy only the final q point's interaction strengths and zero mask to the host by default (set to `0` to skip this copy). Per-q callbacks such as `--write-pp` still receive the data at every requested q point. |
 
+For conductivity-only runs, disabling PP retention saves host memory and can reduce runtime when the final q point has many triplets or phonon branches. With `PHONO3PY_GPU_RETAIN_PP=0`, the calculated conductivity is the same and the `interaction_strength` and `zero_value_positions` properties of `ph3.phph_interaction` are both `None` after the run.
+
 Increasing batch sizes raises memory use and may not improve runtime. To try larger batches:
 
 ```bash

@@ -85,6 +85,8 @@ print(ph3.thermal_conductivity.kappa)
 
 插件已包含 WTE 功能，无需另外安装 phono3py-wte。
 
+如果只需 LBTE 或 WTE-LBTE 热导率，可设置 `PHONO3PY_GPU_RETAIN_PP=0`，跳过最后一个 q 点的三声子相互作用强度回传。这样可以节省主存，在末 q 点张量很大的体系中也可能缩短总耗时。[PP 保留与输出说明](docs/advanced.md#performance-tuning)
+
 ## 使用多张 GPU
 
 计算使用同一台机器上所有可见的 GPU。如需指定设备，在启动前设置 `CUDA_VISIBLE_DEVICES`；例如使用 GPU 0 和 1：
