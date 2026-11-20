@@ -85,7 +85,7 @@ In an existing Python calculation, select the plugin with `transport_type="GPU"`
 
 WTE is included; no separate phono3py-wte installation is needed.
 
-If you only need thermal conductivity from LBTE or WTE-LBTE, set `PHONO3PY_GPU_RETAIN_PP=0` to skip copying the final q point’s interaction strengths from GPU to host. This saves host memory and can shorten the run when that tensor is large. [PP retention and output](docs/advanced.md#performance-tuning)
+If you only need thermal conductivity and won’t read the three-phonon interaction strengths, set `PHONO3PY_GPU_RETAIN_PP=0`. [Details](docs/advanced.md#performance-tuning)
 
 ## Use multiple GPUs
 
