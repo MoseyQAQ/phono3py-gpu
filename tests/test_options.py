@@ -123,13 +123,17 @@ def test_pp_roundtrip(si, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("transport", ["GPU", "WTE-GPU"])
-def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch, transport):
+def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch, capsys, transport):
     monkeypatch.chdir(tmp_path)
     ph = deepcopy(si)
+    ph._log_level = 1
     ph.mesh_numbers = [3, 3, 3]
     ph.init_phph_interaction()
-    for retain in ("1", "0"):
-        monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", retain)
+    for retain in ("1", "0", "default"):
+        if retain == "default":
+            monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP", raising=False)
+        else:
+            monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", retain)
         ph.run_thermal_conductivity(
             temperatures=[300.0],
             transport_type=transport,
@@ -138,19 +142,27 @@ def test_write_lbte_pp_without_retention(si, tmp_path, monkeypatch, transport):
             write_pp=True,
             output_filename=retain,
         )
+        from phono3py_gpu.multigpu import devices
+
+        output = capsys.readouterr().out
+        if len(devices()) > 1:
+            assert (
+                f"of {len(devices())} visible GPUs (per-q output or callback)" in output
+            )
         pp = ph.phph_interaction
         assert (pp.interaction_strength is not None) == (retain == "1")
         assert (pp.zero_value_positions is not None) == (retain == "1")
 
     for gp in ph.thermal_conductivity.grid_points:
         ref, ref_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="1")
-        strength, zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="0")
-        np.testing.assert_array_equal(strength, ref)
-        np.testing.assert_array_equal(zero, ref_zero)
+        for mode in ("0", "default"):
+            strength, zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename=mode)
+            np.testing.assert_array_equal(strength, ref)
+            np.testing.assert_array_equal(zero, ref_zero)
 
     # The last requested point can differ from the last point of the full grid.
     requested = ph.thermal_conductivity.grid_points[[-1, 1]]
-    monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP")
+    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
     ph.run_thermal_conductivity(
         temperatures=[300.0],
         transport_type=transport,

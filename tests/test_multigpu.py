@@ -41,7 +41,8 @@ def test_fourier_reuse(si, monkeypatch, average, method):
 @pytest.mark.parametrize(
     "lbte,wte", [(False, False), (False, True), (True, False), (True, True)]
 )
-def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
+def test_multi_gpu_transport(si, monkeypatch, capsys, lbte, wte):
+    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
     visible = devices()
     if len(visible) < 2:
         pytest.skip("Two CUDA devices required.")
@@ -50,6 +51,7 @@ def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
     for ids in ([0], visible):
         monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: ids)
         ph = deepcopy(si)
+        ph._log_level = 1
         ph.mesh_numbers = [4] * 3
         ph.sigmas = [None, 0.1]
         ph.init_phph_interaction()
@@ -60,6 +62,30 @@ def test_multi_gpu_transport(si, monkeypatch, lbte, wte):
             is_N_U=not lbte,
             pinv_solver=3,
         )
+        calc = ph.thermal_conductivity
+        used = (
+            ids
+            if len(ids) == 1
+            else [
+                dev
+                for dev in ids
+                if calc.multi_gpu_stats["per_device"][dev]["q_points"]
+            ]
+        )
+        method = ("WTE" if wte else "BTE") + ("-LBTE" if lbte else "-RTA")
+        runtime = cupy().cuda.runtime
+        devices_used = ", ".join(
+            f"GPU {dev} ({runtime.getDeviceProperties(dev)['name'].decode()})"
+            for dev in used
+        )
+        output = capsys.readouterr().out
+        assert output.count(f"phono3py-gpu: {method} scattering: {devices_used}\n") == 1
+        stage = (
+            "global solve"
+            if lbte
+            else ("mode contributions" if wte else "conductivity sum")
+        )
+        assert output.count(f"phono3py-gpu: {method} {stage}: GPU 0 (") == 1
         values.append(ph.thermal_conductivity)
     reference, result = values
     assert result.multi_gpu_stats["devices"] == visible
@@ -145,13 +171,14 @@ def test_distributed_eigensolver(block):
         (False, True, 3, 0),
     ],
 )
-def test_distributed_lbte(si, monkeypatch, wte, reducible, pinv, method):
+def test_distributed_lbte(si, monkeypatch, capsys, wte, reducible, pinv, method):
     if cupy().cuda.runtime.getDeviceCount() < 2:
         pytest.skip("Two CUDA devices required.")
     results = []
     for mode in ("single", "mg"):
         monkeypatch.setenv("PHONO3PY_GPU_LBTE_SOLVER", mode)
         ph = deepcopy(si)
+        ph._log_level = 1
         ph.mesh_numbers = [3] * 3
         ph.init_phph_interaction()
         ph.run_thermal_conductivity(
@@ -162,6 +189,13 @@ def test_distributed_lbte(si, monkeypatch, wte, reducible, pinv, method):
             pinv_solver=pinv,
             pinv_method=method,
         )
+        lines = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if "global solve:" in line
+        ]
+        assert len(lines) == 1
+        assert ("(cuSOLVERMg)" in lines[0]) == (mode == "mg")
         results.append(ph.thermal_conductivity)
     expected, result = results
     np.testing.assert_allclose(result.kappa, expected.kappa, rtol=1e-7, atol=1e-7)

@@ -85,7 +85,7 @@ print(ph3.thermal_conductivity.kappa)
 
 插件已包含 WTE 功能，无需另外安装 phono3py-wte。
 
-如果只算热导率，不需要读取三声子相互作用强度，可以设置 `PHONO3PY_GPU_RETAIN_PP=0`，详见[进阶文档](docs/advanced.md#performance-tuning)。
+如果需要在 GPU LBTE 或 WTE-LBTE 结束后用 Python 读取末 q 点的三声子相互作用强度，请设置 `PHONO3PY_GPU_RETAIN_PP=1`，详见[进阶文档](docs/advanced.md#performance-tuning)。
 
 ## 使用多张 GPU
 

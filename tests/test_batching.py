@@ -84,6 +84,7 @@ def test_interleaved_collision_rows(si, reducible):
         pp,
         collision,
         engine=engine,
+        retain_pp=True,
         sigmas=[None, 0.1],
         sigma_cutoff=3.0,
         temperatures=np.array([0.0, 100.0, 300.0]),
@@ -116,7 +117,7 @@ def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport
         pytest.skip("Two CUDA devices required.")
     monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: list(range(gpu_count)))
     monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
-    monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP", raising=False)
+    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
     ph = deepcopy(si)
     ph.mesh_numbers = [3, 3, 3]
     ph.sigmas = [None, 0.1]
@@ -143,7 +144,7 @@ def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport
     assert pp.interaction_strength is not None
     assert pp.zero_value_positions is not None
 
-    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "0")
+    monkeypatch.delenv("PHONO3PY_GPU_RETAIN_PP")
     saved_at.clear()
     ph.run_thermal_conductivity(**options)
     result = ph.thermal_conductivity
