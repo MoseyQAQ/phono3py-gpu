@@ -89,6 +89,7 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
     )
     payload = dict(pp=copy(pp), collision=collision, options=options, lang=pp._lang)
     if collision:
+        options["retain_pp"] = solver.retain_pp
         payload["rot_grid_points"] = (
             None
             if solver._collision._is_reducible_collision_matrix
@@ -232,7 +233,7 @@ def _worker():
             answers = compute_q_batch(solver, gps, collision=payload["collision"])
             state = (
                 (pp.interaction_strength, pp.zero_value_positions)
-                if last and payload["collision"]
+                if last and payload["collision"] and solver.retain_pp
                 else None
             )
             pickle.dump(

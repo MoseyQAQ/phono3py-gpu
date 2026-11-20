@@ -161,7 +161,7 @@ def compute_q_batch(solver, grid_points, collision=False):
                         np.int32(nq),
                     ),
                 )
-            if collision and j == ns - 1:
+            if collision and solver.retain_pp and j == ns - 1:
                 # Preserve the upstream final-q pp state without retaining
                 # every q's full interaction tensor on the host.
                 last = np.flatnonzero(owner[start:end] == nq - 1)
@@ -171,7 +171,7 @@ def compute_q_batch(solver, grid_points, collision=False):
                     saved_zero.append(host(zero[ids]))
         if collision:
             rows[j] = host(row)
-    if collision:
+    if collision and solver.retain_pp:
         pp.set_interaction_strength(
             np.concatenate(saved), g_zero=np.concatenate(saved_zero)
         )

@@ -134,7 +134,22 @@ class GPURTACalculator(GPUCalculatorMixin, RTACalculator):
 
 
 class GPULBTECalculator(GPUCalculatorMixin, LBTECalculator):
-    pass
+    def _iterate_grid_points(self, on_grid_point):
+        solver = self._collision_solver
+        if solver.retain_pp or on_grid_point is None:
+            return super()._iterate_grid_points(on_grid_point)
+
+        # A writer or user callback can read the current q point's pp.
+        def consume_pp(index):
+            on_grid_point(index)
+            self._pp.delete_interaction_strength()
+
+        solver.retain_pp = True
+        try:
+            return super()._iterate_grid_points(consume_pp)
+        finally:
+            solver.retain_pp = False
+            self._pp.delete_interaction_strength()
 
 
 def _validate_wte(interaction, config, wte):
@@ -243,6 +258,7 @@ def make_lbte(
         interaction,
         collision,
         engine=engine,
+        retain_pp=os.environ.get("PHONO3PY_GPU_RETAIN_PP", "1") != "0",
         sigmas=config.sigmas,
         sigma_cutoff=config.sigma_cutoff,
         temperatures=config.temperatures,
