@@ -7,7 +7,7 @@ import pytest
 
 from phono3py_gpu.backend import cupy, host
 from phono3py_gpu.fourier import GPUFC3Transform
-from phono3py_gpu.multigpu import devices
+from phono3py_gpu.multigpu import _copy_interaction, devices
 
 
 def test_visible_devices():
@@ -15,6 +15,41 @@ def test_visible_devices():
     expected = list(range(cp.cuda.runtime.getDeviceCount()))
     with cp.cuda.Device(expected[-1]):
         assert devices() == expected
+
+
+def test_worker_state_is_private(si):
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3] * 3
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    pp.set_grid_point(1)
+    worker = _copy_interaction(pp)
+    assert worker.fc3 is pp.fc3
+    assert worker.fc3_nonzero_indices is pp.fc3_nonzero_indices
+    assert worker.all_shortest is pp.all_shortest
+    for name in ("frequencies", "eigenvectors", "degenerate_ids"):
+        source = getattr(pp.phonons, name)
+        copied = getattr(worker.phonons, name)
+        np.testing.assert_array_equal(source, copied)
+        assert not np.shares_memory(source, copied)
+    worker.set_grid_point(2)
+    assert pp.get_triplets_at_q()[0][0, 0] == 1
+
+
+@pytest.mark.parametrize("q_batch", [1, 8])
+def test_single_task_uses_primary_gpu(si, monkeypatch, q_batch):
+    if len(devices()) < 2:
+        pytest.skip("Two CUDA devices required.")
+    monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3] * 3
+    ph.init_phph_interaction()
+    ph.run_thermal_conductivity(
+        temperatures=[300.0], transport_type="GPU", is_LBTE=True,
+        grid_points=[1], pinv_solver=3,
+    )
+    assert ph.thermal_conductivity.multi_gpu_stats is None
 
 
 @pytest.mark.parametrize("average", [False, True])
@@ -41,7 +76,14 @@ def test_fourier_reuse(si, monkeypatch, average, method):
 @pytest.mark.parametrize(
     "lbte,wte", [(False, False), (False, True), (True, False), (True, True)]
 )
-def test_multi_gpu_transport(si, monkeypatch, capsys, lbte, wte):
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("material", ["si", "nacl"])
+def test_multi_gpu_transport(
+    request, monkeypatch, capsys, lbte, wte, streamed, material
+):
+    if streamed:
+        monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
+        monkeypatch.setattr("phono3py_gpu.interaction.initial_band_block", lambda *_: 2)
     monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
     visible = devices()
     if len(visible) < 2:
@@ -50,7 +92,7 @@ def test_multi_gpu_transport(si, monkeypatch, capsys, lbte, wte):
     values = []
     for ids in ([0], visible):
         monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: ids)
-        ph = deepcopy(si)
+        ph = deepcopy(request.getfixturevalue(material))
         ph._log_level = 1
         ph.mesh_numbers = [4] * 3
         ph.sigmas = [None, 0.1]
@@ -126,6 +168,72 @@ def test_worker_failure(si, monkeypatch):
     ph.init_phph_interaction()
     with pytest.raises(RuntimeError, match="worker failed"):
         ph.run_thermal_conductivity(temperatures=[300.0], transport_type="GPU")
+
+
+def test_worker_task_failure(si, monkeypatch):
+    if len(devices()) < 2:
+        pytest.skip("Two CUDA devices required.")
+    monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", "1")
+
+    def fail(*args, **kwargs):
+        raise ValueError("failed during scattering")
+
+    monkeypatch.setattr("phono3py_gpu.batching.compute_q_batch", fail)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [3] * 3
+    ph.init_phph_interaction()
+    with pytest.raises(RuntimeError, match="worker failed") as error:
+        ph.run_thermal_conductivity(temperatures=[300.0], transport_type="GPU")
+    assert isinstance(error.value.__cause__, ValueError)
+
+
+def test_partial_lbte_keeps_last_requested_row(si, monkeypatch):
+    from threading import Lock
+
+    import phono3py_gpu.multigpu as multigpu
+
+    if len(devices()) < 2:
+        pytest.skip("Two CUDA devices required.")
+    monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", "1")
+    monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
+    expected = []
+    for ids in ([0], [0, 1]):
+        monkeypatch.setattr("phono3py_gpu.factory.devices", lambda: ids)
+        # Force result delivery in reverse request order, independent of timing.
+        original_queue = multigpu.queue.Queue
+
+        class ReversedResults(original_queue):
+            def __init__(self):
+                super().__init__()
+                self.pending = []
+                self.pending_lock = Lock()
+
+            def put(self, item, *args, **kwargs):
+                if isinstance(item[0], str) and item[0] == "result":
+                    with self.pending_lock:
+                        self.pending.append(item)
+                        if len(self.pending) == 2:
+                            for result in sorted(
+                                self.pending, key=lambda r: r[2][0][0][0], reverse=True
+                            ):
+                                super().put(result, *args, **kwargs)
+                else:
+                    super().put(item, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(multigpu.queue, "Queue", ReversedResults)
+            ph = deepcopy(si)
+            ph.mesh_numbers = [3] * 3
+            ph.init_phph_interaction()
+            ph.run_thermal_conductivity(
+                temperatures=[300.0], transport_type="GPU", is_LBTE=True,
+                grid_points=[1, 4], pinv_solver=3,
+            )
+        calc = ph.thermal_conductivity
+        expected.append((calc.collision_matrix.copy(), calc.gamma.copy(),
+                         ph.phph_interaction.interaction_strength.copy()))
+    for actual, reference in zip(expected[1], expected[0], strict=True):
+        np.testing.assert_allclose(actual, reference, rtol=1e-9, atol=1e-13)
 
 
 @pytest.mark.parametrize("block", [32, 32, 256])

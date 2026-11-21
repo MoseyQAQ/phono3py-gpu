@@ -111,8 +111,10 @@ def test_conductivity(si, lbte, wte, sigma, q_batch, streamed, monkeypatch):
         results.append(ph.thermal_conductivity)
     cpu, gpu = results
     visible = devices()
-    if len(visible) > 1 and not streamed:
-        assert gpu.multi_gpu_stats["devices"] == visible
+    groups = (len(gpu.grid_points) + q_batch - 1) // q_batch
+    active = visible[:groups] if not streamed else visible[:1]
+    if len(active) > 1:
+        assert gpu.multi_gpu_stats["devices"] == active
     else:
         assert gpu.multi_gpu_stats is None
     if streamed:
