@@ -182,8 +182,11 @@ def test_scattering(si, sigma):
     np.testing.assert_allclose(gpu.gamma_U, cpu.gamma_U, rtol=1e-9, atol=1e-13)
 
 
-@pytest.mark.parametrize("sigma", [None, 0.1])
-def test_isotope(si, sigma):
+@pytest.mark.parametrize("sigma", [None, 0.1, 1.0])
+@pytest.mark.parametrize("cutoff", [None, 5.0])
+@pytest.mark.parametrize("bands", [None, [4, 0, 2], [3, 2]])
+@pytest.mark.parametrize("lang", ["C", "Rust"])
+def test_isotope(si, sigma, cutoff, bands, lang):
     from phono3py.conductivity.scattering_solvers import IsotopeScatteringSolver
     from phono3py.other.isotope import Isotope
 
@@ -193,17 +196,23 @@ def test_isotope(si, sigma):
     si.init_phph_interaction()
     pp = si.phph_interaction
     pp.run_phonon_solver()
+    cutoff = pp.cutoff_frequency if cutoff is None else cutoff
     iso = Isotope(
         pp.mesh_numbers,
         pp.primitive,
         bz_grid=pp.bz_grid,
-        cutoff_frequency=pp.cutoff_frequency,
+        cutoff_frequency=cutoff,
+        band_indices=bands,
+        lang=lang,
     )
     iso.set_phonons(pp.phonons, dm=pp.dynamical_matrix)
     cpu = IsotopeScatteringSolver(iso, [sigma])
     gpu = GPUIsotopeSolver(iso, [sigma])
     for gp in [1, 3, 9]:
         a, b = cpu.compute(gp), gpu.compute(gp)
+        below_cutoff = pp.phonons.frequencies[gp, iso.band_indices] < cutoff
+        assert np.all(b[:, below_cutoff] == 0.0)
+        assert np.any(b[:, ~below_cutoff] > 0.0)
         np.testing.assert_allclose(b, a, rtol=1e-9, atol=1e-13)
 
 
