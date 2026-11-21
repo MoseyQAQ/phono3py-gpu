@@ -51,11 +51,11 @@ class GPUVelocitySolver(GroupVelocitySolver):
 
     def _sqrt(self, dm, zero_acoustic):
         cp = cupy()
-        _, e = eigh(dm)
+        val, e = eigh(dm)
         if zero_acoustic:
             e[:, :3] = 0
-        # Match WTE's complex square root, including unstable modes.
-        roots = cp.sqrt(cp.diag(e.conj().T @ dm @ e))
+        # Use the complex principal square root, including unstable modes.
+        roots = cp.sqrt(val.astype(cp.complex128))
         return (e * roots) @ e.conj().T
 
     def compute(self, grid_points):
