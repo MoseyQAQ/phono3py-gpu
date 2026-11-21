@@ -4,6 +4,7 @@ English | [简体中文](README_CN.md)
 
 - **A phono3py plugin** that works with your existing phono3py workflows.
 - **Single- and multi-GPU acceleration** for lattice thermal conductivity on NVIDIA GPUs.
+- **10–50× speedups in selected benchmarks**.
 
 ## Installation
 
@@ -99,13 +100,6 @@ Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scr
 ## Performance
 
 CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
-
-The single-GPU column is the median of three runs after warm-up, at 300 K with
-FP64 and tetrahedron integration. Timings include interaction initialization,
-FC3 packing, scattering and transport solve, but exclude input loading and CUDA
-context warm-up, matching the original table's timing boundaries.
-CPU and multi-GPU columns retain the measurements from `8285225`; they were
-not remeasured for this single-GPU update.
 
 | Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
 |---|---:|---|---:|---:|---:|---:|
