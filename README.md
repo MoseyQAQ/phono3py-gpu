@@ -103,10 +103,10 @@ CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 G
 
 | Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
 |---|---:|---|---:|---:|---:|---:|
-| Si · BTE-RTA | 24 | 19³ | 296.6 | 34.4 | 24.8 | 24.6 |
-| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 71.6 | 98.2 | 103.3 |
-| ABO · LBTE | 60 | 6×6×5 | 441.7 | 13.2 | 10.1 | 9.7 |
-| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 9.9 | 7.0 | 6.1 |
+| Si · BTE-RTA | 24 | 19³ | 296.6 | 32.9 | 18.8 | 11.2 |
+| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 72.7 | 39.5 | 24.8 |
+| ABO · LBTE | 60 | 6×6×5 | 441.7 | 13.2 | 11.8 | 10.2 |
+| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 9.8 | 8.5 | 7.9 |
 
 ## Help and contributing
 
