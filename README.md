@@ -99,31 +99,14 @@ Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scr
 
 ## Performance
 
-GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
-
-**Multi-GPU scaling after the startup optimization.** ABO calculation cells with 20–160 atoms use the same 160-atom force-constant supercell, a 3³ mesh, 300 K, FP64, and tetrahedron integration.
-
-The table reports median `run_thermal_conductivity` times, including worker startup and per-GPU FC3 preparation. Input loading, object initialization, and initial CUDA warmup are outside this interval.
-
-| Method | Atoms in calculation cell | 1 GPU | 2 GPUs | 4 GPUs |
-|---|---:|---:|---:|---:|
-| WTE-RTA | 20 | 0.37 | 0.52 | 0.75 |
-| WTE-RTA | 40 | 1.03 | 1.08 | 1.38 |
-| WTE-RTA | 80 | 3.95 | 2.71 | 2.46 |
-| WTE-RTA | 160 | 24.47 | 14.13 | 9.57 |
-| LBTE | 20 | 0.36 | 0.53 | 0.85 |
-| LBTE | 40 | 1.12 | 1.11 | 1.31 |
-| LBTE | 80 | 4.93 | 3.64 | 3.10 |
-| LBTE | 160 | 30.99 | 20.18 | 15.05 |
-
-**Earlier CPU/GPU measurements**, before the multi-GPU startup optimization, using the meshes below. CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads).
+CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
 
 | Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
 |---|---:|---|---:|---:|---:|---:|
-| Si · BTE-RTA | 24 | 19³ | 296.6 | 31.2 | 22.9 | 16.0 |
-| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 78.2 | 61.0 | 46.5 |
-| ABO · LBTE | 60 | 6×6×5 | 441.7 | 14.7 | | |
-| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 10.9 | | |
+| Si · BTE-RTA | 24 | 19³ | 296.6 | 34.4 | 24.8 | 24.6 |
+| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 71.6 | 98.2 | 103.3 |
+| ABO · LBTE | 60 | 6×6×5 | 441.7 | 13.2 | 10.1 | 9.7 |
+| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 9.9 | 7.0 | 6.1 |
 
 ## Help and contributing
 
