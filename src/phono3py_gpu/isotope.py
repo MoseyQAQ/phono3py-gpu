@@ -79,6 +79,7 @@ class GPUIsotopeSolver(IsotopeScatteringSolver):
                 valid = f[ids] >= iso._cutoff_frequency
                 gamma += (strength * w * valid[:, None, :]).sum(axis=(0, 2))
             gamma *= f0**2 * np.pi / (4 * int(np.prod(iso.bz_grid.D_diag)))
+            gamma[f0 < iso._cutoff_frequency] = 0.0
             if iso._average_over_initial_bands():
                 average_axis(gamma, iso.phonons.degenerate_ids[grid_point], 0)
                 gamma = gamma[cp.asarray(iso.band_indices)]
