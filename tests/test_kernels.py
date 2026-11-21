@@ -9,6 +9,64 @@ from phono3py_gpu.backend import cupy, host
 from phono3py_gpu.harmonic import Harmonic
 from phono3py_gpu.integration import weights
 from phono3py_gpu.interaction import InteractionKernel
+from phono3py_gpu.velocity import GPUVelocitySolver
+
+
+@pytest.mark.parametrize("zero_acoustic", [False, True])
+@pytest.mark.parametrize("unstable", [False, True])
+def test_wte_square_root(zero_acoustic, unstable):
+    """Check the spectral root, including degeneracy and complex negative roots."""
+    cp = cupy()
+    rng = np.random.default_rng(42)
+    basis = np.linalg.qr(rng.normal(size=(6, 6)) + 1j * rng.normal(size=(6, 6)))[0]
+    values = np.array(
+        [-1, -0.25, 0.01, 2.25, 4, 4] if unstable else [0.25, 0.25, 1, 2.25, 4, 4]
+    )
+    dm = (basis * values) @ basis.conj().T
+    roots = np.sqrt(values.astype(complex))
+    if zero_acoustic:
+        roots[:3] = 0
+    expected = (basis * roots) @ basis.conj().T
+    solver = GPUVelocitySolver.__new__(GPUVelocitySolver)
+    actual = host(solver._sqrt(cp.asarray(dm), zero_acoustic))
+    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("fixture", ["si", "nacl"])
+@pytest.mark.parametrize("delta_q", [5e-6, 1e-5])
+def test_wte_velocity_square_root(fixture, delta_q, request, monkeypatch):
+    """Keep finite-difference velocities at Gamma and finite q, including NAC."""
+    from copy import deepcopy
+
+    from phono3py_gpu.backend import eigh
+
+    ph = deepcopy(request.getfixturevalue(fixture))
+    ph.mesh_numbers = [3, 3, 3]
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    solver = GPUVelocitySolver(
+        pp, harmonic=Harmonic(pp.dynamical_matrix), wte=True, gv_delta_q=delta_q
+    )
+    grid_points = [pp.bz_grid.gp_Gamma, 1]
+    actual = solver.compute(grid_points)
+    actual_operator = solver.velocity_operator.copy()
+
+    def projected_sqrt(self, dm, zero_acoustic):
+        cp = cupy()
+        _, e = eigh(dm)
+        if zero_acoustic:
+            e[:, :3] = 0
+        return (e * cp.sqrt(cp.diag(e.conj().T @ dm @ e))) @ e.conj().T
+
+    monkeypatch.setattr(GPUVelocitySolver, "_sqrt", projected_sqrt)
+    expected = solver.compute(grid_points)
+    np.testing.assert_allclose(
+        actual_operator, solver.velocity_operator, atol=1e-6, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        actual.group_velocities, expected.group_velocities, atol=1e-6, rtol=1e-6
+    )
+    np.testing.assert_allclose(actual.vm_by_vm, expected.vm_by_vm, atol=1e-6, rtol=1e-6)
 
 
 @pytest.mark.parametrize("fixture", ["si", "nacl"])
