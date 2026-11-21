@@ -6,6 +6,8 @@ from phonopy.phonon.tetrahedron_method import get_tetrahedra_relative_gr_grid_ad
 
 from phono3py_gpu.backend import cupy, kernel
 
+MIN_SHARED_FREQUENCIES = 24
+
 
 class TetrahedronTopology:
     """Reuse upstream integer BZ neighbours for a fixed interaction mesh."""
@@ -112,10 +114,14 @@ def weights(
     else:
         if vertices is None:
             vertices = TetrahedronTopology(pp).vertices(triplets)
+        shared = nf >= MIN_SHARED_FREQUENCIES
+        if shared and bounds is None:
+            bounds = channel_bounds(frequencies, vertices)
         g = cp.empty((nc, *shape))
         zero = cp.empty(shape, dtype=cp.int8)
-        kernel("tetrahedron.cu", "weights")(
-            ((zero.size + 127) // 128,),
+        work = len(triplets) * nb * nb * 32 if shared else zero.size
+        kernel("tetrahedron.cu", "weights_shared" if shared else "weights")(
+            ((work + 127) // 128,),
             (128,),
             (
                 g,
@@ -140,3 +146,17 @@ def weights(
             average_axis(zero[t], ids[q1], 1, minimum=True)
             average_axis(zero[t], ids[q2], 2, minimum=True)
     return g, zero
+
+
+def sigma_weights(pp, triplets, frequencies, frequency_points, sigmas, **kwargs):
+    """Keep each sigma's weights and combine their nonzero supports."""
+    integrations = [
+        weights(pp, triplets, frequencies, frequency_points, sigma, **kwargs)
+        for sigma in sigmas
+    ]
+    zero = integrations[0][1]
+    if len(integrations) > 1:
+        zero = zero.copy()
+        for _, mask in integrations[1:]:
+            zero &= mask
+    return integrations, zero

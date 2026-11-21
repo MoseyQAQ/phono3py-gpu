@@ -4,7 +4,6 @@ English | [简体中文](README_CN.md)
 
 - **A phono3py plugin** that works with your existing phono3py workflows.
 - **Single- and multi-GPU acceleration** for lattice thermal conductivity on NVIDIA GPUs.
-- **10–50× speedups in selected benchmarks**.
 
 ## Installation
 
@@ -101,12 +100,19 @@ Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scr
 
 CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
 
+The single-GPU column is the median of three runs after warm-up, at 300 K with
+FP64 and tetrahedron integration. Timings include interaction initialization,
+FC3 packing, scattering and transport solve, but exclude input loading and CUDA
+context warm-up, matching the original table's timing boundaries.
+CPU and multi-GPU columns retain the measurements from `8285225`; they were
+not remeasured for this single-GPU update.
+
 | Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
 |---|---:|---|---:|---:|---:|---:|
-| Si · BTE-RTA | 24 | 19³ | 296.6 | 32.9 | 18.8 | 11.2 |
-| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 72.7 | 39.5 | 24.8 |
-| ABO · LBTE | 60 | 6×6×5 | 441.7 | 13.2 | 11.8 | 10.2 |
-| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 9.8 | 8.5 | 7.9 |
+| Si · BTE-RTA | 24 | 19³ | 296.6 | 27.7 | 18.8 | 11.2 |
+| AlN · BTE-RTA | 12 | 25×25×17 | 562.3 | 64.7 | 39.5 | 24.8 |
+| ABO · LBTE | 60 | 6×6×5 | 441.7 | 12.3 | 11.8 | 10.2 |
+| ABO · WTE-RTA | 60 | 6×6×5 | 451.8 | 9.2 | 8.5 | 7.9 |
 
 ## Help and contributing
 

@@ -14,7 +14,11 @@ from phono3py_gpu.scattering import GPUCollisionSolver
 
 
 @pytest.mark.parametrize("sigma", [None, 0.1])
-def test_mixed_frequency_points(si, sigma):
+@pytest.mark.parametrize("shared", [False, True])
+def test_mixed_frequency_points(si, sigma, shared, monkeypatch):
+    monkeypatch.setattr(
+        "phono3py_gpu.integration.MIN_SHARED_FREQUENCIES", 1 if shared else 100
+    )
     cp = cupy()
     ph = deepcopy(si)
     ph.mesh_numbers = [4, 4, 4]
@@ -212,6 +216,8 @@ def test_band_tiles_preserve_pp_files(si, tmp_path, monkeypatch, lbte):
     monkeypatch.chdir(tmp_path)
     ph = deepcopy(si)
     ph.mesh_numbers = [3] * 3
+    ph.sigmas = [None, 0.1, 0.2]
+    ph.sigma_cutoff = 3.0
     ph.init_phph_interaction()
     options = dict(
         transport_type="GPU", is_LBTE=lbte, temperatures=[300.0], pinv_solver=3
@@ -221,12 +227,19 @@ def test_band_tiles_preserve_pp_files(si, tmp_path, monkeypatch, lbte):
     monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
     monkeypatch.setattr("phono3py_gpu.interaction.initial_band_block", lambda *_: 2)
     ph.run_thermal_conductivity(**options, write_pp=True, output_filename="tiles")
+    # Upstream writes only the final sigma when several are requested.
+    sigma = ph.sigmas[-1]
     for gp in ph.thermal_conductivity.grid_points:
-        full, full_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="full")
-        tiled, tiled_zero = read_pp_from_hdf5(ph.mesh_numbers, gp, filename="tiles")
+        full, full_zero = read_pp_from_hdf5(
+            ph.mesh_numbers, gp, sigma=sigma, sigma_cutoff=3.0, filename="full"
+        )
+        tiled, tiled_zero = read_pp_from_hdf5(
+            ph.mesh_numbers, gp, sigma=sigma, sigma_cutoff=3.0, filename="tiles"
+        )
         np.testing.assert_allclose(tiled, full, rtol=1e-9, atol=1e-25)
         np.testing.assert_array_equal(tiled_zero, full_zero)
+    ph.sigmas = [sigma]
     ph.run_thermal_conductivity(**options, read_pp=True, input_filename="tiles")
     np.testing.assert_allclose(
-        ph.thermal_conductivity.gamma, ref, rtol=1e-9, atol=1e-12
+        ph.thermal_conductivity.gamma, ref[-1:], rtol=1e-9, atol=1e-12
     )

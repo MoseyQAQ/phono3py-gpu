@@ -79,6 +79,10 @@ class InteractionKernel:
         e0 = self.mass_eigenvectors[q0][:, ids]
         first = (e0.T @ tensor.reshape(nb, -1)).reshape(len(bands), nb, nb)
         second = self.mass_eigenvectors[q1].T @ first
+        if zero is not None:
+            return self._masked_projection(
+                second[None], cp.asarray(triplet)[None], bands, zero[None]
+            )[0]
         amplitude = second.reshape(-1, nb) @ self.mass_eigenvectors[q2]
         result = cp.empty((len(bands), nb, nb), dtype=cp.float64)
         kernel("interaction.cu", "amplitude_squared")(
@@ -99,6 +103,30 @@ class InteractionKernel:
         )
         return result
 
+    def _masked_projection(self, second, triplets, bands, zero):
+        """Skip zero-support final-leg dot products before forming amplitudes."""
+        cp = cupy()
+        result = cp.empty((len(triplets), len(bands), self.nb, self.nb))
+        kernel("interaction.cu", "masked_projection")(
+            ((result.size + 127) // 128,),
+            (128,),
+            (
+                result,
+                second,
+                self.mass_eigenvectors,
+                self.frequencies,
+                triplets,
+                cp.asarray(bands, dtype=cp.int64),
+                cp.ascontiguousarray(zero, dtype=cp.int8),
+                np.int32(len(triplets)),
+                np.int32(len(bands)),
+                np.int32(self.nb),
+                np.float64(self.pp.cutoff_frequency),
+                *(np.int64(s // second.itemsize) for s in second.strides),
+            ),
+        )
+        return result
+
     def project(self, triplets, bands, zero=None):
         """Contract atom-first reciprocal FC3 without conjugating eigenvectors."""
         cp = cupy()
@@ -114,26 +142,7 @@ class InteractionKernel:
         a = cp.einsum("tijk,tia->tajk", tensor, e0)
         b = cp.einsum("tajk,tjb->tabk", a, e1)
         if zero is not None:
-            result = cp.empty((n, len(bands), self.nb, self.nb))
-            kernel("interaction.cu", "masked_projection")(
-                ((result.size + 127) // 128,),
-                (128,),
-                (
-                    result,
-                    b,
-                    self.mass_eigenvectors,
-                    self.frequencies,
-                    tp,
-                    cp.asarray(bands, dtype=cp.int64),
-                    cp.ascontiguousarray(zero, dtype=cp.int8),
-                    np.int32(n),
-                    np.int32(len(bands)),
-                    np.int32(self.nb),
-                    np.float64(self.pp.cutoff_frequency),
-                    *(np.int64(s // b.itemsize) for s in b.strides),
-                ),
-            )
-            return result
+            return self._masked_projection(b, tp, bands, zero)
         e2 = self.mass_eigenvectors[tp[:, 2]]
         amplitude = cp.einsum("tabk,tkc->tabc", b, e2)
         f0 = self.frequencies[tp[:, 0]][:, cp.asarray(bands)]

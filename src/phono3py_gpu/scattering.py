@@ -12,7 +12,7 @@ from phono3py.phonon3.imag_self_energy import ImagSelfEnergy
 from phonopy.physical_units import get_physical_units
 
 from phono3py_gpu.backend import cupy, host, kernel
-from phono3py_gpu.integration import channel_bounds, weights
+from phono3py_gpu.integration import channel_bounds, sigma_weights
 
 
 def average_initial(values, pp, gp):
@@ -64,9 +64,25 @@ def linewidth_detail(engine, triplets, strength, g, temperature, occupation=None
     return result
 
 
+def sigma_groups(engine, sigmas, row_bytes=0, reuse=True):
+    """Bound extra sigma weights and collision rows to a quarter of free memory."""
+    width = 1
+    if reuse and len(sigmas) > 1 and engine.pp.constant_averaged_interaction is None:
+        # Account for resident FC3 before choosing how many sigmas to retain.
+        engine.fourier
+        bands = engine.band_block if engine.streamed else len(engine.pp.band_indices)
+        elements = engine.batch_size * bands * engine.nb**2
+        per_sigma = 25 * elements + row_bytes  # Three FP64 channels and a byte mask.
+        width = max(
+            1, min(len(sigmas), cupy().cuda.runtime.memGetInfo()[0] // 4 // per_sigma)
+        )
+    for first in range(0, len(sigmas), width):
+        yield range(first, min(first + width, len(sigmas)))
+
+
 def interaction_batches(
     engine,
-    sigma,
+    sigmas,
     sigma_cutoff,
     collision=False,
     full=False,
@@ -81,21 +97,27 @@ def interaction_batches(
     gp = triplets[0, 0]
     loaded = loaded_zero = None
     if read_pp:
+        assert len(sigmas) == 1
         loaded, loaded_zero = read_pp_from_hdf5(
             pp.mesh_numbers,
             grid_point=int(gp),
-            sigma=sigma,
+            sigma=sigmas[0],
             sigma_cutoff=sigma_cutoff,
             filename=filename,
         )
     bands = pp.band_indices
+    # An unbounded Gaussian makes the shared support dense; keep the GEMM path.
+    dense = full or (
+        (sigma_cutoff is None or sigma_cutoff <= 0)
+        and any(sigma is not None for sigma in sigmas)
+    )
     # A streamed batch shares one reciprocal FC3 across all its initial-band tiles.
     triplet_step = 1 if engine.streamed else engine.batch_size
     band_step = engine.band_block if engine.streamed else len(bands)
     for start in range(0, len(triplets), triplet_step):
         batch = slice(start, start + triplet_step)
         selected = triplets[batch]
-        vertices = engine.tetrahedron.vertices(selected) if sigma is None else None
+        vertices = engine.tetrahedron.vertices(selected) if None in sigmas else None
         bounds = None
         tensor = None
         if engine.streamed:
@@ -110,14 +132,14 @@ def interaction_batches(
         for first in range(0, len(bands), band_step):
             block = slice(first, first + band_step)
             ids = bands[block]
-            g, zero = weights(
+            integrations, zero = sigma_weights(
                 pp,
                 selected,
                 engine.frequencies,
                 engine.frequencies[gp, cp.asarray(ids)],
-                sigma,
-                sigma_cutoff,
-                collision,
+                sigmas,
+                sigma_cutoff=sigma_cutoff,
+                collision=collision,
                 vertices=vertices,
                 bounds=bounds,
             )
@@ -136,12 +158,25 @@ def interaction_batches(
                 )
             elif engine.streamed:
                 strength = engine.project_slice(
-                    tensor, selected[0], ids, None if full else zero[0]
+                    tensor, selected[0], ids, None if dense else zero[0]
                 )[None]
                 strength *= pp.unit_conversion_factor
             else:
                 strength = engine.compute(selected, None if full else zero)
-            yield start, selected, block, g, zero, strength
+            shared = strength
+            masked = (
+                not full
+                and loaded is None
+                and averaged is None
+                and pp.constant_averaged_interaction is None
+                and not pp.symmetrize_fc3q
+            )
+            for j, (g, zero) in enumerate(integrations):
+                strength = (
+                    cp.where(zero, 0, shared) if masked and len(sigmas) > 1 else shared
+                )
+                yield j, start, selected, block, g, zero, strength
+            del integrations, shared, strength
         del tensor
 
 
@@ -178,16 +213,19 @@ class GPUScatteringSolver(RTAScatteringSolver):
             shape = (len(triplets), nb0, self.engine.nb, self.engine.nb)
             saved = np.empty(shape, dtype=np.float64)
             saved_zero = np.empty(shape, dtype=np.int8)
-        for j, sigma in enumerate(self._sigmas):
-            for start, selected, block, g, zero, strength in interaction_batches(
+        for group in sigma_groups(
+            self.engine, self._sigmas, reuse=not self._read_pp and not self._use_ave_pp
+        ):
+            for j, start, selected, block, g, zero, strength in interaction_batches(
                 self.engine,
-                sigma,
+                [self._sigmas[i] for i in group],
                 self._sigma_cutoff,
                 full=self._is_full_pp,
                 read_pp=self._read_pp,
                 filename=self._pp_filename,
                 averaged=averaged_pp_interaction if self._use_ave_pp else None,
             ):
+                j += group.start
                 end = start + len(selected)
                 w = cp.asarray(multiplicities[start:end])
                 is_normal = cp.asarray(
@@ -284,17 +322,23 @@ class GPUCollisionSolver(LBTECollisionSolver):
             shape = (len(triplets), nb0, nb, nb)
             saved = np.empty(shape, dtype=np.float64)
             saved_zero = np.empty(shape, dtype=np.int8)
-        for j, sigma in enumerate(self._sigmas):
-            row = cp.zeros((nt, *rowshape))
-            for start, selected, block, g, zero, strength in interaction_batches(
+        for group in sigma_groups(
+            self.engine,
+            self._sigmas,
+            row_bytes=nt * int(np.prod(rowshape)) * 8,
+            reuse=not self._read_pp,
+        ):
+            row = cp.zeros((len(group), nt, *rowshape))
+            for j, start, selected, block, g, zero, strength in interaction_batches(
                 self.engine,
-                sigma,
+                [self._sigmas[i] for i in group],
                 self._sigma_cutoff,
                 collision=True,
                 full=self._is_full_pp,
                 read_pp=self._read_pp,
                 filename=self._pp_filename,
             ):
+                j += group.start
                 end = start + len(selected)
                 w = cp.asarray(multiplicities[start:end])
                 if average is not None and j == 0:
@@ -333,10 +377,10 @@ class GPUCollisionSolver(LBTECollisionSolver):
                         ),
                     )
                     kernel("scattering.cu", "collision_rows")(
-                        ((row[k, block].size + 127) // 128,),
+                        ((row[j - group.start, k, block].size + 127) // 128,),
                         (128,),
                         (
-                            row[k, block],
+                            row[j - group.start, k, block],
                             reduced,
                             target_triplets,
                             target_swapped,
@@ -354,7 +398,8 @@ class GPUCollisionSolver(LBTECollisionSolver):
                 if self.retain_pp and j == ns - 1:
                     saved[start:end, block] = host(strength)
                     saved_zero[start:end, block] = host(zero)
-            rows[j] = host(row)
+            rows[group.start : group.stop] = host(row)
+            del row
         if self.retain_pp:
             pp.set_interaction_strength(saved, g_zero=saved_zero)
         average_initial(gamma, pp, grid_point)
