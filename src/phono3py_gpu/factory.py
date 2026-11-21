@@ -80,11 +80,14 @@ class GPUCalculatorMixin:
         indices = list(self._get_grid_point_indices())
         if collision and indices:
             self._pp.delete_interaction_strength()
-        if len(ids) > 1 and not reason and indices:
-            if collision:
+        if not reason and indices:
+            if collision and (len(ids) > 1 or requested > 1):
                 _, _, shape, _ = collision_layout(solver)
                 bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
                 requested = batch_size(bytes_per_q, maximum=max(1, requested))
+            groups = (len(indices) + max(1, requested) - 1) // max(1, requested)
+            ids = ids[:groups]
+        if len(ids) > 1 and not reason and indices:
             iterate_multi_gpu(
                 self, solver, ids, indices, max(1, requested), collision, on_grid_point
             )
@@ -105,10 +108,6 @@ class GPUCalculatorMixin:
             if collision:
                 return self._iterate_lbte_points(indices, on_grid_point)
             return super()._iterate_grid_points(on_grid_point)
-        if collision:
-            _, _, shape, _ = collision_layout(solver)
-            bytes_per_q = int(np.prod(shape)) * len(solver._temperatures) * 8
-            requested = batch_size(bytes_per_q, maximum=requested)
         for start in range(0, len(indices), requested):
             selected = indices[start : start + requested]
             gps = self._kappa_settings.grid_points[selected]

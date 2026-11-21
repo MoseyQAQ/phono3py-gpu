@@ -1,12 +1,15 @@
 """Single-node GPU workers for independent initial-q scattering tasks.
 
 Workers are fresh Python subprocesses, so ordinary scripts need no multiprocessing
-main guard and never fork an initialized CUDA context. A temporary CPU snapshot
-preserves the canonical phonon basis; only NumPy results cross process boundaries.
+main guard and never fork an initialized CUDA context. A copy-on-write mapped
+snapshot shares large host arrays while preserving private mutable state and the
+canonical phonon basis. Only NumPy results cross processes.
 """
 
+import mmap
 import pickle
 import queue
+import struct
 import subprocess
 import sys
 import tempfile
@@ -17,7 +20,48 @@ from contextlib import redirect_stdout
 from copy import copy
 from pathlib import Path
 
+from phono3py.phonon3.triplets import get_nosym_triplets_at_q, get_triplets_at_q
+
 from phono3py_gpu.backend import cupy
+
+
+def _write_snapshot(payload, stream):
+    """Keep large NumPy buffers outside the pickle for shared mapped loading."""
+    buffers = []
+
+    def collect(buffer):
+        view = buffer.raw()
+        if view.nbytes < 1024**2:
+            return True
+        buffers.append(view)
+        return False
+
+    metadata = pickle.dumps(payload, protocol=5, buffer_callback=collect)
+    for view in buffers:
+        stream.write(struct.pack("<Q", view.nbytes))
+        stream.write(b"\0" * (-stream.tell() % 64))
+        stream.write(view)
+    offset = stream.tell()
+    stream.write(metadata)
+    stream.write(struct.pack("<Q", offset))
+
+
+def _load_snapshot(stream):
+    """Workers share file pages; writes remain private through copy-on-write."""
+    mapping = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY)
+    view = memoryview(mapping)
+    (offset,) = struct.unpack_from("<Q", view, len(view) - 8)
+
+    def buffers():
+        position = 0
+        while position < offset:
+            (size,) = struct.unpack_from("<Q", view, position)
+            position = (position + 8 + 63) // 64 * 64
+            yield view[position : position + size]
+            position += size
+
+    stream.seek(offset)
+    return pickle.load(stream, buffers=buffers())
 
 
 def devices():
@@ -73,9 +117,12 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
     pp = calculator._pp
     grid_points = calculator._kappa_settings.grid_points
     counts = {}
+    get_triplets = (
+        get_triplets_at_q if pp._is_mesh_symmetry else get_nosym_triplets_at_q
+    )
     for index in indices:
-        pp.set_grid_point(int(grid_points[index]))
-        counts[index] = len(pp.get_triplets_at_q()[0])
+        # Scheduling needs counts only; workers prepare and validate q state.
+        counts[index] = len(get_triplets(int(grid_points[index]), pp.bz_grid)[0])
     groups = [indices[i : i + q_batch] for i in range(0, len(indices), q_batch)]
     final_group = groups[-1]
     groups.sort(key=lambda group: sum(counts[i] for i in group), reverse=True)
@@ -111,7 +158,7 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
     with tempfile.TemporaryDirectory(prefix="phono3py-gpu-") as directory:
         snapshot = Path(directory) / "interaction.pickle"
         with snapshot.open("wb") as stream:
-            pickle.dump(payload, stream, protocol=5)
+            _write_snapshot(payload, stream)
         executor = ThreadPoolExecutor(max_workers=len(ids))
         futures = [
             executor.submit(
@@ -148,7 +195,8 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
                 for index, answer in zip(group, answers, strict=True):
                     if collision:
                         calculator._gamma[:, :, index] = answer.gamma
-                        calculator._kappa_solver.store(index, answer)
+                        if calculator._grid_point_indices is None or index == last:
+                            calculator._kappa_solver.store(index, answer)
                     else:
                         pending[index] = answer
                     calculator._grid_point_count += 1
@@ -184,7 +232,9 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
             solver._gamma_N, solver._gamma_U = answer["gamma_N"], answer["gamma_U"]
             calculator._grid_point_count = count + 1
             if callback is not None:
-                pp.set_grid_point(int(grid_points[index]))
+                # Match the batched single-GPU callback using computed metadata.
+                pp._triplets_at_q = answer["triplets"]
+                pp._weights_at_q = answer["weights"]
                 callback(index)
 
 
@@ -201,7 +251,7 @@ def _worker():
         cp = cupy()
         cp.cuda.Device(int(sys.argv[1])).use()
         with open(sys.argv[2], "rb") as stream:
-            payload = pickle.load(stream)
+            payload = _load_snapshot(stream)
         pp = payload["pp"]
         engine = InteractionKernel(
             pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)

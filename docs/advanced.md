@@ -26,9 +26,16 @@ The following settings use only the primary GPU for scattering, even when severa
 - LBTE: full interaction strengths, reading interaction strengths, and per-q callbacks, including collision or interaction-strength output.
 - Both: an explicit NAC q direction.
 
+The worker count is also limited to the number of q-point task groups. A single
+group runs directly on the primary GPU without starting workers.
+
 ## Out of memory
 
-Each GPU worker keeps a full copy of the force constants and phonon data in host memory and on its GPU. Adding GPUs does not reduce this storage requirement. Workers also need temporary disk space.
+Each GPU worker uses a fresh Python process and its own CUDA context. Large host
+arrays share a temporary snapshot through copy-on-write memory mappings; changes
+to phonon or q-point state remain private. Each GPU still needs a full device
+copy of the packed force constants, so adding GPUs does not reduce per-device
+FC3 storage. The snapshot is removed after workers exit, including on failure.
 
 If you increased the [batch sizes](#performance-tuning), reduce them first. This reduces batch memory use, but does not remove the storage requirements for force constants or the LBTE collision matrix.
 

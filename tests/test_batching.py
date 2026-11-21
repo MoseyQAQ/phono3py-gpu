@@ -127,7 +127,7 @@ def test_lbte_without_retained_pp(si, monkeypatch, gpu_count, q_batch, transport
     set_strength = type(pp).set_interaction_strength
 
     def record_snapshot(interaction, strength, g_zero=None):
-        if strength is not None:
+        if interaction is pp and strength is not None:
             saved_at.append(interaction.get_triplets_at_q()[0][0, 0])
         set_strength(interaction, strength, g_zero=g_zero)
 
