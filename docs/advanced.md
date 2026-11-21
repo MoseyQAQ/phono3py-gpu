@@ -31,12 +31,11 @@ group runs directly on the primary GPU without starting workers.
 
 ## Out of memory
 
-GPU workers share the immutable host FC3 arrays in one process. Each worker owns
-its mutable phonon and q-point state, CUDA stream, and device memory pool; it still
-needs a full device copy of the packed force constants. Adding GPUs does not
-reduce per-device FC3 storage. Scattering workers do not write temporary snapshots.
-On failure, workers stop taking new q groups and finish any active group before
-the error returns.
+Each GPU worker uses a fresh Python process and its own CUDA context. Large host
+arrays share a temporary snapshot through copy-on-write memory mappings; changes
+to phonon or q-point state remain private. Each GPU still needs a full device
+copy of the packed force constants, so adding GPUs does not reduce per-device
+FC3 storage. The snapshot is removed after workers exit, including on failure.
 
 If you increased the [batch sizes](#performance-tuning), reduce them first. This reduces batch memory use, but does not remove the storage requirements for force constants or the LBTE collision matrix.
 

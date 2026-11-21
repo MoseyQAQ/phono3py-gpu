@@ -7,7 +7,7 @@ import pytest
 
 from phono3py_gpu.backend import cupy, host
 from phono3py_gpu.fourier import GPUFC3Transform
-from phono3py_gpu.multigpu import _copy_interaction, devices
+from phono3py_gpu.multigpu import _load_snapshot, _write_snapshot, devices
 
 
 def test_visible_devices():
@@ -17,17 +17,20 @@ def test_visible_devices():
         assert devices() == expected
 
 
-def test_worker_state_is_private(si):
+def test_worker_state_is_private(si, tmp_path):
     ph = deepcopy(si)
     ph.mesh_numbers = [3] * 3
     ph.init_phph_interaction()
     pp = ph.phph_interaction
     pp.run_phonon_solver()
     pp.set_grid_point(1)
-    worker = _copy_interaction(pp)
-    assert worker.fc3 is pp.fc3
-    assert worker.fc3_nonzero_indices is pp.fc3_nonzero_indices
-    assert worker.all_shortest is pp.all_shortest
+    path = tmp_path / "interaction.pickle"
+    with path.open("wb") as stream:
+        _write_snapshot(pp, stream)
+    with path.open("rb") as stream:
+        worker = _load_snapshot(stream)
+    for name in ("fc3", "fc3_nonzero_indices", "all_shortest"):
+        np.testing.assert_array_equal(getattr(worker, name), getattr(pp, name))
     for name in ("frequencies", "eigenvectors", "degenerate_ids"):
         source = getattr(pp.phonons, name)
         copied = getattr(worker.phonons, name)
@@ -35,6 +38,27 @@ def test_worker_state_is_private(si):
         assert not np.shares_memory(source, copied)
     worker.set_grid_point(2)
     assert pp.get_triplets_at_q()[0][0, 0] == 1
+
+
+def test_mapped_snapshot_is_copy_on_write(tmp_path):
+    path = tmp_path / "arrays.pickle"
+    large = np.arange(200_000, dtype=np.float64)
+    payload = dict(large=large, alias=large, small=np.arange(3))
+    with path.open("wb") as stream:
+        _write_snapshot(payload, stream)
+    with path.open("rb") as stream:
+        first = _load_snapshot(stream)
+    with path.open("rb") as stream:
+        second = _load_snapshot(stream)
+    assert first["large"] is first["alias"]
+    assert not first["large"].flags.owndata
+    assert first["large"].ctypes.data % 64 == 0
+    first["large"][0] = -1
+    first["small"][0] = -1
+    np.testing.assert_array_equal(second["large"], large)
+    np.testing.assert_array_equal(second["small"], payload["small"])
+    with path.open("rb") as stream:
+        np.testing.assert_array_equal(_load_snapshot(stream)["large"], large)
 
 
 @pytest.mark.parametrize("q_batch", [1, 8])
@@ -84,6 +108,22 @@ def test_multi_gpu_transport(
     if streamed:
         monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
         monkeypatch.setattr("phono3py_gpu.interaction.initial_band_block", lambda *_: 2)
+        # Apply the same small-fixture tile settings in fresh worker interpreters.
+        import phono3py_gpu.multigpu as multigpu
+
+        popen = multigpu.subprocess.Popen
+
+        def launch(args, **kwargs):
+            bootstrap = (
+                "import sys; import phono3py; "
+                "import phono3py_gpu.interaction as interaction; "
+                "interaction.MIN_STREAMED_BANDS = 1; "
+                "interaction.initial_band_block = lambda *_: 2; "
+                "from phono3py_gpu.multigpu import _worker; _worker()"
+            )
+            return popen([args[0], "-c", bootstrap, *args[-2:]], **kwargs)
+
+        monkeypatch.setattr(multigpu.subprocess, "Popen", launch)
     monkeypatch.setenv("PHONO3PY_GPU_RETAIN_PP", "1")
     visible = devices()
     if len(visible) < 2:
@@ -171,20 +211,24 @@ def test_worker_failure(si, monkeypatch):
 
 
 def test_worker_task_failure(si, monkeypatch):
+    import phono3py_gpu.multigpu as multigpu
+
     if len(devices()) < 2:
         pytest.skip("Two CUDA devices required.")
     monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", "1")
 
-    def fail(*args, **kwargs):
-        raise ValueError("failed during scattering")
+    write_snapshot = multigpu._write_snapshot
 
-    monkeypatch.setattr("phono3py_gpu.batching.compute_q_batch", fail)
+    def invalid_sigma(payload, stream):
+        payload["options"]["sigmas"] = ["invalid"]
+        write_snapshot(payload, stream)
+
+    monkeypatch.setattr(multigpu, "_write_snapshot", invalid_sigma)
     ph = deepcopy(si)
     ph.mesh_numbers = [3] * 3
     ph.init_phph_interaction()
-    with pytest.raises(RuntimeError, match="worker failed") as error:
+    with pytest.raises(RuntimeError, match="worker failed"):
         ph.run_thermal_conductivity(temperatures=[300.0], transport_type="GPU")
-    assert isinstance(error.value.__cause__, ValueError)
 
 
 def test_partial_lbte_keeps_last_requested_row(si, monkeypatch):
