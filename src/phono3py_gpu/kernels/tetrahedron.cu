@@ -736,3 +736,66 @@ extern "C" __global__ void spectral_weights(
     }
     out[index]=sum*4.0/nth;
 }
+
+// One warp shares vertex sorting for a final-band pair across initial bands.
+extern "C" __global__ void weights_shared(
+    double* out, signed char* zero, const double* freq, const double* f0,
+    const long long* vertices, int nt, int nb0, int nb, int nth, int nc,
+    int frequency_stride, const double* bounds) {
+    int lane = threadIdx.x % 32;
+    long long pair = (long long)blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    long long pairs = (long long)nt * nb * nb;
+    if (pair >= pairs) return;
+    int t = pair / (nb * nb), j = (pair / nb) % nb, k = pair % nb;
+    long long size = (long long)nt * nb0 * nb * nb;
+    for (int first = 0; first < nb0; first += 32) {
+        int b = first + lane;
+        double w = b < nb0 ? f0[t * frequency_stride + b] : 0.;
+        double total[3] = {0., 0., 0.};
+        bool active = false;
+        for (int ch = 0; ch < 3; ++ch) {
+            bool valid = b < nb0;
+            if (bounds) {
+                double lo, hi;
+                if (ch == 0) {
+                    lo = bounds[pair]; hi = bounds[pairs + pair];
+                } else if (ch == 1) {
+                    lo = bounds[2 * pairs + pair]; hi = bounds[3 * pairs + pair];
+                } else {
+                    lo = -bounds[3 * pairs + pair]; hi = -bounds[2 * pairs + pair];
+                }
+                valid = valid && w >= lo && w <= hi;
+            }
+            if (!__any_sync(0xffffffff, valid)) continue;
+            for (int h = 0; h < nth; ++h) {
+                double v[4] = {0., 0., 0., 0.};
+                int center = 0;
+                if (lane == 0) {
+                    for (int l = 0; l < 4; ++l) {
+                        long long a = vertices[((t * 2) * nth + h) * 4 + l];
+                        long long c = vertices[((t * 2 + 1) * nth + h) * 4 + l];
+                        double x = fmax(freq[a * nb + j], 0.);
+                        double y = fmax(freq[c * nb + k], 0.);
+                        v[l] = ch == 0 ? x + y : ch == 1 ? -x + y : x - y;
+                    }
+                    center = sort_omegas(v);
+                }
+                for (int l = 0; l < 4; ++l) v[l] = __shfl_sync(0xffffffff, v[l], 0);
+                center = __shfl_sync(0xffffffff, center, 0);
+                if (valid) {
+                    if (w >= v[0] && w <= v[3]) active = true;
+                    int region = w < v[0] ? 0 : w < v[1] ? 1 : w < v[2] ? 2 : w < v[3] ? 3 : 4;
+                    total[ch] += _I(region, center, w, v) * _g(region, w, v);
+                }
+            }
+            total[ch] *= 4.0 / nth;
+        }
+        if (b < nb0) {
+            long long idx = ((long long)t * nb0 + b) * nb * nb + j * nb + k;
+            out[idx] = total[0];
+            out[size + idx] = total[1] - total[2];
+            if (nc == 3) out[2 * size + idx] = total[0] + total[1] + total[2];
+            zero[idx] = !active;
+        }
+    }
+}

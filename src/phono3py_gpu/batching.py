@@ -9,8 +9,8 @@ from phono3py.conductivity.grid_point_data import ScatteringResult
 from phono3py.conductivity.lbte_collision_solver import LBTECollisionResult
 
 from phono3py_gpu.backend import cupy, host, kernel
-from phono3py_gpu.integration import weights
-from phono3py_gpu.scattering import average_initial, linewidth_detail
+from phono3py_gpu.integration import sigma_weights
+from phono3py_gpu.scattering import average_initial, linewidth_detail, sigma_groups
 
 
 def collision_layout(solver):
@@ -108,99 +108,112 @@ def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
         rotations = cp.asarray(rotations)
         rows = np.empty((ns, nt, nq, *rowshape))
 
-    for j, sigma in enumerate(solver._sigmas):
+    row_bytes = nt * nq * int(np.prod(rowshape)) * 8 if collision else 0
+    for group in sigma_groups(engine, solver._sigmas, row_bytes=row_bytes):
         if collision:
-            row = cp.zeros((nt, nq, *rowshape))
+            row = cp.zeros((len(group), nt, nq, *rowshape))
             saved, saved_zero = [], []
         for start in range(0, len(triplets), engine.batch_size):
             end = min(start + engine.batch_size, len(triplets))
             selected = triplets[start:end]
             tp = cp.asarray(selected)
             frequencies = engine.frequencies[tp[:, 0]][:, bands]
-            g, zero = weights(
+            integrations, zero = sigma_weights(
                 pp,
                 selected,
                 engine.frequencies,
                 frequencies,
-                sigma,
-                solver._sigma_cutoff,
+                [solver._sigmas[j] for j in group],
+                sigma_cutoff=solver._sigma_cutoff,
                 collision=collision,
                 vertices=engine.tetrahedron.vertices(selected)
-                if sigma is None
+                if any(solver._sigmas[j] is None for j in group)
                 else None,
             )
-            strength = engine.compute(selected, zero)
-            stats = solver.q_batch_stats
-            stats["triplet_batches"] += 1
-            stats["max_q_per_launch"] = max(
-                stats["max_q_per_launch"], len(np.unique(owner[start:end]))
-            )
-            for k, temperature in enumerate(solver._temperatures):
-                values = linewidth_detail(
-                    engine, selected, strength, g, temperature, solver._occupations[k]
-                ).sum(axis=(2, 3))
-                kernel("scattering.cu", "sum_by_q")(
-                    ((channels * nq * nb0 + 127) // 128,),
-                    (128,),
-                    (
-                        gamma[j, k],
-                        values,
-                        multiplicities[start:end],
-                        owners[start:end],
-                        normal[start:end],
-                        np.int32(len(selected)),
-                        np.int32(nb0),
-                        np.int32(nq),
-                        np.int32(channels),
-                    ),
+            shared = engine.compute(selected, zero)
+            masked = pp.constant_averaged_interaction is None and not pp.symmetrize_fc3q
+            for j, (g, zero) in zip(group, integrations):
+                strength = (
+                    cp.where(zero, 0, shared) if masked and len(group) > 1 else shared
                 )
-                if not collision or temperature <= 0:
-                    continue
-                reduced = cp.empty((2, len(selected), nb0, nb))
-                kernel("scattering.cu", "collision_reduce")(
-                    ((reduced.size + 127) // 128,),
-                    (128,),
-                    (
-                        reduced,
+                stats = solver.q_batch_stats
+                stats["triplet_batches"] += 1
+                stats["max_q_per_launch"] = max(
+                    stats["max_q_per_launch"], len(np.unique(owner[start:end]))
+                )
+                for k, temperature in enumerate(solver._temperatures):
+                    values = linewidth_detail(
+                        engine,
+                        selected,
                         strength,
-                        g[2],
-                        solver._inv_sinh[k],
-                        tp,
-                        np.int32(len(selected)),
-                        np.int32(nb0),
-                        np.int32(nb),
-                        np.float64(solver._collision.unit_conversion_factor),
-                    ),
-                )
-                kernel("scattering.cu", "collision_rows")(
-                    ((row[k].size + 127) // 128,),
-                    (128,),
-                    (
-                        row[k],
-                        reduced,
-                        mapped,
-                        swapped,
-                        rotations,
-                        np.int32(len(selected)),
-                        np.int32(nb0),
-                        np.int32(nb),
-                        np.int32(targets.shape[0]),
-                        np.int32(targets.shape[1]),
-                        np.int32(start),
-                        np.int32(nc),
-                        np.int32(nq),
-                    ),
-                )
-            if retain_pp and j == ns - 1:
-                # Preserve the upstream final-q pp state without retaining
-                # every q's full interaction tensor on the host.
-                last = np.flatnonzero(owner[start:end] == nq - 1)
-                if len(last):
-                    ids = cp.asarray(last)
-                    saved.append(host(strength[ids]))
-                    saved_zero.append(host(zero[ids]))
+                        g,
+                        temperature,
+                        solver._occupations[k],
+                    ).sum(axis=(2, 3))
+                    kernel("scattering.cu", "sum_by_q")(
+                        ((channels * nq * nb0 + 127) // 128,),
+                        (128,),
+                        (
+                            gamma[j, k],
+                            values,
+                            multiplicities[start:end],
+                            owners[start:end],
+                            normal[start:end],
+                            np.int32(len(selected)),
+                            np.int32(nb0),
+                            np.int32(nq),
+                            np.int32(channels),
+                        ),
+                    )
+                    if not collision or temperature <= 0:
+                        continue
+                    reduced = cp.empty((2, len(selected), nb0, nb))
+                    kernel("scattering.cu", "collision_reduce")(
+                        ((reduced.size + 127) // 128,),
+                        (128,),
+                        (
+                            reduced,
+                            strength,
+                            g[2],
+                            solver._inv_sinh[k],
+                            tp,
+                            np.int32(len(selected)),
+                            np.int32(nb0),
+                            np.int32(nb),
+                            np.float64(solver._collision.unit_conversion_factor),
+                        ),
+                    )
+                    kernel("scattering.cu", "collision_rows")(
+                        ((row[j - group.start, k].size + 127) // 128,),
+                        (128,),
+                        (
+                            row[j - group.start, k],
+                            reduced,
+                            mapped,
+                            swapped,
+                            rotations,
+                            np.int32(len(selected)),
+                            np.int32(nb0),
+                            np.int32(nb),
+                            np.int32(targets.shape[0]),
+                            np.int32(targets.shape[1]),
+                            np.int32(start),
+                            np.int32(nc),
+                            np.int32(nq),
+                        ),
+                    )
+                if retain_pp and j == ns - 1:
+                    # Preserve the upstream final-q pp state without retaining
+                    # every q's full interaction tensor on the host.
+                    last = np.flatnonzero(owner[start:end] == nq - 1)
+                    if len(last):
+                        ids = cp.asarray(last)
+                        saved.append(host(strength[ids]))
+                        saved_zero.append(host(zero[ids]))
+            del integrations, shared, strength
         if collision:
-            rows[j] = host(row)
+            rows[group.start : group.stop] = host(row)
+            del row
     if retain_pp:
         pp.set_interaction_strength(
             np.concatenate(saved), g_zero=np.concatenate(saved_zero)

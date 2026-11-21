@@ -277,9 +277,13 @@ def test_isotope(si, sigma, cutoff, bands, lang):
 @pytest.mark.parametrize(
     "symmetrize,average", [(True, False), (False, True), (True, True)]
 )
-def test_tetrahedron_options(si, symmetrize, average):
+@pytest.mark.parametrize("shared", [False, True])
+def test_tetrahedron_options(si, symmetrize, average, shared, monkeypatch):
     from copy import deepcopy
 
+    monkeypatch.setattr(
+        "phono3py_gpu.integration.MIN_SHARED_FREQUENCIES", 1 if shared else 100
+    )
     ph = deepcopy(si)
     ph.mesh_numbers = [4, 4, 4]
     ph.init_phph_interaction(

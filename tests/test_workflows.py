@@ -78,9 +78,9 @@ def register_cpu_wte():
 @pytest.mark.parametrize(
     "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
 )
-@pytest.mark.parametrize("sigma", [None, 0.1])
+@pytest.mark.parametrize("sigmas", [[None], [0.1], [None, 0.1, 0.2]])
 @pytest.mark.parametrize("q_batch,streamed", [(1, False), (4, False), (4, True)])
-def test_conductivity(si, lbte, wte, sigma, q_batch, streamed, monkeypatch):
+def test_conductivity(si, lbte, wte, sigmas, q_batch, streamed, monkeypatch):
     if streamed:
         # Exercise multiple initial-band tiles on the small CPU reference.
         monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
@@ -94,7 +94,8 @@ def test_conductivity(si, lbte, wte, sigma, q_batch, streamed, monkeypatch):
     for gpu in (False, True):
         ph = deepcopy(si)
         ph.mesh_numbers = [3, 3, 3]
-        ph.sigmas = [sigma]
+        ph.sigmas = sigmas
+        ph.sigma_cutoff = 3.0
         ph.init_phph_interaction()
         transport = (
             ("WTE-GPU" if wte else "GPU") if gpu else ("reference-wte" if wte else None)
