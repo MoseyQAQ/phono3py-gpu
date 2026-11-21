@@ -99,7 +99,24 @@ Use `CUDA_VISIBLE_DEVICES=0` for one GPU. The same setting works with Python scr
 
 ## Performance
 
-CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads). GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
+GPU: NVIDIA Tesla V100 (16 GB). Times are in seconds.
+
+**Multi-GPU scaling after the startup optimization.** ABO calculation cells with 20–160 atoms use the same 160-atom force-constant supercell, a 3³ mesh, 300 K, FP64, and tetrahedron integration.
+
+The table reports median `run_thermal_conductivity` times, including worker startup and per-GPU FC3 preparation. Input loading, object initialization, and initial CUDA warmup are outside this interval.
+
+| Method | Atoms in calculation cell | 1 GPU | 2 GPUs | 4 GPUs |
+|---|---:|---:|---:|---:|
+| WTE-RTA | 20 | 0.37 | 0.52 | 0.75 |
+| WTE-RTA | 40 | 1.03 | 1.08 | 1.38 |
+| WTE-RTA | 80 | 3.95 | 2.71 | 2.46 |
+| WTE-RTA | 160 | 24.47 | 14.13 | 9.57 |
+| LBTE | 20 | 0.36 | 0.53 | 0.85 |
+| LBTE | 40 | 1.12 | 1.11 | 1.31 |
+| LBTE | 80 | 4.93 | 3.64 | 3.10 |
+| LBTE | 160 | 30.99 | 20.18 | 15.05 |
+
+**Earlier CPU/GPU measurements**, before the multi-GPU startup optimization, using the meshes below. CPU: AMD Ryzen Threadripper PRO 5995WX (8 threads).
 
 | Case | Phonon branches | Mesh | CPU | 1 GPU | 2 GPUs | 4 GPUs |
 |---|---:|---|---:|---:|---:|---:|

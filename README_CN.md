@@ -99,7 +99,24 @@ CUDA_VISIBLE_DEVICES=0,1 phono3py --br --tt GPU --mesh 9 9 9 --ts 300
 
 ## 性能
 
-CPU：AMD Ryzen Threadripper PRO 5995WX（8 线程）；GPU：NVIDIA Tesla V100（16 GB）。耗时单位为秒。
+GPU：NVIDIA Tesla V100（16 GB）。耗时单位为秒。
+
+**启动优化后的多卡性能。** ABO 的 20–160 原子计算晶胞使用同一个 160 原子力常数超胞，采用 3³ mesh、300 K、FP64 和四面体积分。
+
+表中为 `run_thermal_conductivity` 耗时的中位数，包含 worker 启动和各 GPU 的 FC3 准备；输入读取、计算对象初始化及初始 CUDA 预热不在此计时区间内。
+
+| 方法 | 计算晶胞原子数 | 1 GPU | 2 GPU | 4 GPU |
+|---|---:|---:|---:|---:|
+| WTE-RTA | 20 | 0.37 | 0.52 | 0.75 |
+| WTE-RTA | 40 | 1.03 | 1.08 | 1.38 |
+| WTE-RTA | 80 | 3.95 | 2.71 | 2.46 |
+| WTE-RTA | 160 | 24.47 | 14.13 | 9.57 |
+| LBTE | 20 | 0.36 | 0.53 | 0.85 |
+| LBTE | 40 | 1.12 | 1.11 | 1.31 |
+| LBTE | 80 | 4.93 | 3.64 | 3.10 |
+| LBTE | 160 | 30.99 | 20.18 | 15.05 |
+
+**此前的 CPU/GPU 测量**，使用多卡启动优化前的版本，mesh 见下表。CPU：AMD Ryzen Threadripper PRO 5995WX（8 线程）。
 
 | 算例 | 声子分支 | mesh | CPU | 1 GPU | 2 GPU | 4 GPU |
 |---|---:|---|---:|---:|---:|---:|
