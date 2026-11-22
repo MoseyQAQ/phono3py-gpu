@@ -145,6 +145,47 @@ def test_masked_partial_projection(si, all_zero, streamed):
     assert np.count_nonzero(result[zero != 0]) == 0
 
 
+@pytest.mark.parametrize("support", ["empty", "sparse", "dense"])
+def test_packed_second_leg(si, support, monkeypatch):
+    from copy import deepcopy
+
+    monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [4] * 3
+    ph.init_phph_interaction()
+    pp = ph.phph_interaction
+    pp.run_phonon_solver()
+    pp.set_grid_point(1)
+    triplets = pp.get_triplets_at_q()[0]
+    nb = pp.phonons.frequencies.shape[1]
+    zero = np.ones((len(triplets), nb, nb, nb), dtype="byte")
+    if support == "sparse":
+        zero[:, 4, [1, 5], 2] = 0
+        zero[:, 2, 3, [0, 4]] = 0
+    elif support == "dense":
+        zero[:] = 0
+    pp.run(g_zero=zero)
+    cp = cupy()
+    engine = InteractionKernel(
+        pp, cp.asarray(pp.phonons.frequencies), cp.asarray(pp.phonons.eigenvectors)
+    )
+    bands = np.array([4, 0, 2], dtype="int64")
+    for index in [0, len(triplets) - 1]:
+        tensor = engine.fourier.components(triplets[index])
+        actual = (
+            engine.project_slice(
+                tensor, triplets[index], bands, cp.asarray(zero[index, bands])
+            )
+            * pp.unit_conversion_factor
+        )
+        np.testing.assert_allclose(
+            host(actual),
+            pp.interaction_strength[index, bands],
+            rtol=1e-9,
+            atol=1e-25,
+        )
+
+
 @pytest.mark.parametrize("fixture", ["si", "si_full"])
 def test_sparse_fc3_packing(fixture, request):
     """Compare nonuniform FC3 blocks and an empty anchor with upstream."""

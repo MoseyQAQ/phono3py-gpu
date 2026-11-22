@@ -76,8 +76,39 @@ class InteractionKernel:
         nb = self.nb
         q0, q1, q2 = triplet
         ids = cp.asarray(bands, dtype=cp.int64)
+        packed = None
+        if zero is not None and nb >= MIN_STREAMED_BANDS:
+            active = cp.any(zero == 0, axis=2)
+            width = int(active.sum(axis=1).max())
+            if width == 0:
+                return cp.zeros(zero.shape, dtype=cp.float64)
+            if width < nb // 2:
+                packed = self._pack_second_leg(q1, active, width)
         e0 = self.mass_eigenvectors[q0][:, ids]
         first = (e0.T @ tensor.reshape(nb, -1)).reshape(len(bands), nb, nb)
+        if packed is not None:
+            vectors, pair_map = packed
+            second = vectors.swapaxes(1, 2) @ first
+            result = cp.empty(zero.shape, dtype=cp.float64)
+            kernel("interaction.cu", "packed_projection")(
+                ((result.size + 127) // 128,),
+                (128,),
+                (
+                    result,
+                    second,
+                    self.mass_eigenvectors,
+                    self.frequencies,
+                    cp.asarray(triplet),
+                    ids,
+                    zero,
+                    pair_map,
+                    np.int32(len(bands)),
+                    np.int32(nb),
+                    np.int32(width),
+                    np.float64(self.pp.cutoff_frequency),
+                ),
+            )
+            return result
         second = self.mass_eigenvectors[q1].T @ first
         if zero is not None:
             return self._masked_projection(
@@ -102,6 +133,32 @@ class InteractionKernel:
             ),
         )
         return result
+
+    def _pack_second_leg(self, grid_point, active, width):
+        """仅投影有非零积分支撑的第二条声子支，保留原始能带索引。"""
+        cp = cupy()
+        nb0, nb = active.shape
+        selected = cp.empty((nb0, nb), dtype=cp.int32)
+        pair_map = cp.empty_like(selected)
+        kernel("interaction.cu", "pack_active_bands")(
+            ((nb0 + 31) // 32,),
+            (32,),
+            (selected, pair_map, active, np.int32(nb0), np.int32(nb)),
+        )
+        vectors = cp.empty((nb0, nb, width), dtype=cp.complex128)
+        kernel("interaction.cu", "gather_second_leg")(
+            ((vectors.size + 127) // 128,),
+            (128,),
+            (
+                vectors,
+                self.mass_eigenvectors[grid_point],
+                selected,
+                np.int32(nb0),
+                np.int32(nb),
+                np.int32(width),
+            ),
+        )
+        return vectors, pair_map
 
     def _masked_projection(self, second, triplets, bands, zero):
         """Skip zero-support final-leg dot products before forming amplitudes."""
