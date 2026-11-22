@@ -274,6 +274,52 @@ def test_isotope(si, sigma, cutoff, bands, lang):
         np.testing.assert_allclose(b, a, rtol=1e-9, atol=1e-13)
 
 
+@pytest.mark.parametrize("symmetrize,average", [(False, False), (True, True)])
+@pytest.mark.parametrize("shared", [False, True])
+def test_isotope_batches(si, symmetrize, average, shared, monkeypatch):
+    """跨批次、简并和多 sigma 的同位素结果与上游 CPU 实现一致。"""
+    from phono3py.conductivity.scattering_solvers import IsotopeScatteringSolver
+    from phono3py.other.isotope import Isotope
+
+    from phono3py_gpu.isotope import GPUIsotopeSolver
+
+    si.mesh_numbers = [3, 3, 3]
+    si.init_phph_interaction()
+    pp = si.phph_interaction
+    pp.run_phonon_solver()
+    iso = Isotope(
+        pp.mesh_numbers,
+        pp.primitive,
+        bz_grid=pp.bz_grid,
+        mass_variances=[0.0, 0.001],
+        band_indices=[4, 0, 2],
+        cutoff_frequency=5.0,
+        symmetrize_tetrahedra=symmetrize,
+        average_degenerate_weights=average,
+        lang="Rust" if symmetrize else "C",
+    )
+    iso.set_phonons(pp.phonons, dm=pp.dynamical_matrix)
+    device_phonons = (
+        (
+            cupy().asarray(pp.phonons.frequencies),
+            cupy().asarray(pp.phonons.eigenvectors),
+        )
+        if shared
+        else None
+    )
+    monkeypatch.setattr("phono3py_gpu.isotope.batch_size", lambda *a, **k: 2)
+    gpu = GPUIsotopeSolver(iso, [None, 0.1, 1.0], device_phonons=device_phonons)
+    for gp in [0, 1, 9]:
+        actual = gpu.compute(gp)
+        expected = np.concatenate(
+            [
+                IsotopeScatteringSolver(iso, [sigma]).compute(gp)
+                for sigma in [None, 0.1, 1.0]
+            ]
+        )
+        np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-13)
+
+
 @pytest.mark.parametrize(
     "symmetrize,average", [(True, False), (False, True), (True, True)]
 )
