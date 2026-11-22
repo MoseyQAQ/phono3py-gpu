@@ -210,6 +210,34 @@ def test_worker_failure(si, monkeypatch):
         ph.run_thermal_conductivity(temperatures=[300.0], transport_type="GPU")
 
 
+def test_primary_gpu_reuses_solver(si, monkeypatch):
+    import phono3py_gpu.multigpu as multigpu
+
+    if len(devices()) < 2:
+        pytest.skip("Two CUDA devices required.")
+    launched = []
+    popen = multigpu.subprocess.Popen
+
+    def launch(args, **kwargs):
+        launched.append(int(args[-2]))
+        return popen(args, **kwargs)
+
+    monkeypatch.setattr(multigpu.subprocess, "Popen", launch)
+    ph = deepcopy(si)
+    ph.mesh_numbers = [4] * 3
+    ph.init_phph_interaction()
+    ph.run_thermal_conductivity(
+        temperatures=[50.0],
+        transport_type="WTE-GPU",
+        is_isotope=True,
+    )
+    calc = ph.thermal_conductivity
+    engine = calc._scattering_solver.engine
+    assert sorted(launched) == calc.multi_gpu_stats["devices"][1:]
+    assert calc._isotope_solver._device_phonons[1] is engine.eigenvectors
+    assert calc._scattering_solver.q_batch_stats is calc.q_batch_stats
+
+
 def test_worker_task_failure(si, monkeypatch):
     import phono3py_gpu.multigpu as multigpu
 

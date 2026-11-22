@@ -1,9 +1,8 @@
 """Single-node GPU workers for independent initial-q scattering tasks.
 
-Workers are fresh Python subprocesses, so ordinary scripts need no multiprocessing
-main guard and never fork an initialized CUDA context. A copy-on-write mapped
-snapshot shares large host arrays while preserving private mutable state and the
-canonical phonon basis. Only NumPy results cross processes.
+The primary GPU reuses the parent solver; other GPUs use fresh subprocesses.
+A copy-on-write mapped snapshot shares large host arrays while preserving private
+mutable state and the canonical phonon basis. Only NumPy results cross processes.
 """
 
 import mmap
@@ -112,6 +111,51 @@ def _serve(device, snapshot, tasks, results, processes, cancelled, ready):
             process.stdout.close()
 
 
+def _compute_task(solver, task, collision):
+    from phono3py_gpu.batching import compute_q_batch
+
+    _, gps, last = task
+    solver.q_batch_stats = dict(triplet_batches=0, max_q_per_launch=0)
+    start = time.perf_counter()
+    answers = compute_q_batch(solver, gps, collision=collision, last_batch=last)
+    pp = solver._pp
+    state = (
+        (pp.interaction_strength, pp.zero_value_positions)
+        if last and collision and solver.retain_pp
+        else None
+    )
+    return answers, time.perf_counter() - start, solver.q_batch_stats, state
+
+
+def _serve_primary(device, solver, collision, tasks, results, cancelled, ready):
+    """首卡复用已有声子数组，避免再启动进程复制整张声子网格。"""
+    try:
+        cupy().cuda.Device(device).use()
+        start = time.perf_counter()
+        solver.engine.fourier
+        results.put(
+            (
+                "ready",
+                device,
+                dict(
+                    setup_seconds=time.perf_counter() - start,
+                    triplet_batch=solver.engine.batch_size,
+                ),
+            )
+        )
+        ready.wait()
+        while not cancelled.is_set():
+            try:
+                task = tasks.get_nowait()
+            except queue.Empty:
+                break
+            payload = _compute_task(solver, task, collision)
+            results.put(("result", device, (task, payload)))
+    except BaseException as error:
+        results.put(("error", device, error))
+        raise
+
+
 def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None):
     """Schedule heavier q groups first, store results in original global slots."""
     pp = calculator._pp
@@ -160,11 +204,23 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
         with snapshot.open("wb") as stream:
             _write_snapshot(payload, stream)
         executor = ThreadPoolExecutor(max_workers=len(ids))
+        # 主线程只收集结果；其余 GPU 保持独立进程，避免争用同一个 GIL。
         futures = [
+            executor.submit(
+                _serve_primary,
+                ids[0],
+                solver,
+                collision,
+                tasks,
+                results,
+                cancelled,
+                ready,
+            )
+        ] + [
             executor.submit(
                 _serve, d, snapshot, tasks, results, processes, cancelled, ready
             )
-            for d in ids
+            for d in ids[1:]
         ]
         try:
             completed = 0
@@ -219,6 +275,7 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
                 if process.poll() is None:
                     process.terminate()
             executor.shutdown(wait=True)
+    solver.q_batch_stats = calculator.q_batch_stats
     pp.set_grid_point(int(grid_points[last]))
     if last_state is not None:
         pp.set_interaction_strength(last_state[0], g_zero=last_state[1])
@@ -241,7 +298,6 @@ def iterate(calculator, solver, ids, indices, q_batch, collision, callback=None)
 def _worker():
     from phono3py.phonon3.collision_matrix import CollisionMatrix
 
-    from phono3py_gpu.batching import compute_q_batch
     from phono3py_gpu.interaction import InteractionKernel
     from phono3py_gpu.scattering import GPUCollisionSolver, GPUScatteringSolver
 
@@ -279,19 +335,8 @@ def _worker():
         )
         output.flush()
         while (task := pickle.load(commands)) is not None:
-            _, gps, last = task
-            solver.q_batch_stats = dict(triplet_batches=0, max_q_per_launch=0)
-            start = time.perf_counter()
-            answers = compute_q_batch(
-                solver, gps, collision=payload["collision"], last_batch=last
-            )
-            state = (
-                (pp.interaction_strength, pp.zero_value_positions)
-                if last and payload["collision"] and solver.retain_pp
-                else None
-            )
             pickle.dump(
-                (answers, time.perf_counter() - start, solver.q_batch_stats, state),
+                _compute_task(solver, task, payload["collision"]),
                 output,
                 protocol=5,
             )
