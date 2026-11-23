@@ -39,10 +39,16 @@ class GPUCalculatorMixin:
         if self._isotope_solver is not None:
             from phono3py_gpu.isotope import GPUIsotopeSolver
 
+            solver = (
+                self._collision_solver
+                if isinstance(self, LBTECalculator)
+                else self._scattering_solver
+            )
             self._isotope_solver = GPUIsotopeSolver(
                 self._isotope_solver.isotope,
                 self._kappa_settings.sigmas,
                 log_level=self._log_level,
+                device_phonons=(solver.engine.frequencies, solver.engine.eigenvectors),
             )
 
     def _build_grid_point_aggregates(self):
