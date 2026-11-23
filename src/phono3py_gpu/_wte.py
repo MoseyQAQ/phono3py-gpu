@@ -79,7 +79,7 @@ class WignerRTAKappaSolver:
         self._mode_kappa_P: NDArray[np.double] | None = None
         self._kappa_C: NDArray[np.double] | None = None
         self._mode_kappa_C: NDArray[np.double] | None = None
-        self._velocity_operator: NDArray[np.cdouble] | None = None
+        self.velocity_operator: NDArray[np.cdouble] | None = None
 
     def _get_pair_contribution(
         self,
@@ -135,11 +135,6 @@ class WignerRTAKappaSolver:
     def finalize(self, aggregates: GridPointAggregates) -> None:
         """Compute mode kappa (P + C) and kappa from aggregated data."""
         assert aggregates.vm_by_vm is not None
-
-        # Store velocity operator from aggregates.extra.
-        vel_op = aggregates.extra.get("velocity_operator")
-        if vel_op is not None:
-            self._velocity_operator = vel_op
 
         num_sigma, num_temp, num_gp, num_band = aggregates.gamma.shape
         self._kappa_P = np.zeros((num_sigma, num_temp, 6), dtype="double", order="C")
@@ -264,7 +259,7 @@ class WignerRTAKappaSolver:
         for slicing by grid-point index.
 
         """
-        return {"velocity_operator": self._velocity_operator}
+        return {"velocity_operator": self.velocity_operator}
 
     def log_kappa(
         self,
@@ -324,7 +319,7 @@ class WignerRTAKappaSolver:
             "mode_kappa": self._mode_kappa_P,
             "mode_kappa_P_RTA": self._mode_kappa_P,
             "mode_kappa_C": self._mode_kappa_C,
-            "velocity_operator": self._velocity_operator,
+            "velocity_operator": self.velocity_operator,
         }
 
 
@@ -372,8 +367,7 @@ class WignerLBTEKappaSolver:
         self._is_reducible = is_reducible_collision_matrix
         self._log_level = log_level
 
-        # Per-grid-point storage (set in finalize() from aggregates.extra).
-        self._velocity_operator: NDArray[np.cdouble] | None = None
+        self.velocity_operator: NDArray[np.cdouble] | None = None
 
         # C-term output arrays.
         num_sigma = len(kappa_settings.sigmas)
@@ -419,11 +413,6 @@ class WignerLBTEKappaSolver:
         table printed at the end of this method) when log_level > 0.
 
         """
-        # Store velocity operator from aggregates.extra.
-        vel_op = aggregates.extra.get("velocity_operator")
-        if vel_op is not None:
-            self._velocity_operator = vel_op
-
         if self._is_reducible:
             print(
                 " WARNING: Coherences conductivity not implemented for "
@@ -533,7 +522,7 @@ class WignerLBTEKappaSolver:
             "mode_kappa_P_exact": self._solver.mode_kappa,
             "mode_kappa_P_RTA": self._solver.mode_kappa_RTA,
             "mode_kappa_C": None if mode_kappa_C is None else mode_kappa_C.real,
-            "velocity_operator": self._velocity_operator,
+            "velocity_operator": self.velocity_operator,
         }
 
     # ------------------------------------------------------------------

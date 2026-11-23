@@ -13,7 +13,7 @@ Requirements:
 - Python 3.11 or newer
 - An NVIDIA GPU with a compatible driver
 - CUDA Toolkit matching your CuPy installation
-- Git and C/C++ compilers to build the dependencies
+- Git to clone this repository
 
 Choose **one** CUDA option for your environment:
 
@@ -31,7 +31,7 @@ cd phono3py-gpu
 pip3 install '.[cuda12]'
 ```
 
-The installer builds phono3py and phonopy from specific Git commits tested with the PyPI release of phonors 0.8.0. The exact revisions are listed in [pyproject.toml](pyproject.toml).
+The installer uses the PyPI releases phono3py 4.11.0, phonopy 4.11.0, and phonors 0.9.0, pinned in [pyproject.toml](pyproject.toml). Compatible wheels are used when available; otherwise, the dependencies' source-build toolchains are required.
 
 If a compatible CuPy is already installed, use `pip3 install .` instead.
 
