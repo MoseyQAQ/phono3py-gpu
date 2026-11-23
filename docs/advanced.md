@@ -89,3 +89,5 @@ From the repository root, install the editable package and test dependencies:
 pip3 install -e '.[cuda12,test]'
 python -m pytest tests -q
 ```
+
+Continuous integration runs Ruff, builds the wheel and source distribution, and executes the tests that do not need CUDA on GitHub-hosted runners. The remaining test modules require a CUDA GPU and must be run locally.
