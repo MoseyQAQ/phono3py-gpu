@@ -52,12 +52,11 @@ class GPUCalculatorMixin:
             )
 
     def _build_grid_point_aggregates(self):
-        aggregates = super()._build_grid_point_aggregates()
         if self._velocity_solver.velocity_operator is not None:
-            aggregates.extra["velocity_operator"] = (
+            self._kappa_solver.velocity_operator = (
                 self._velocity_solver.velocity_operator
             )
-        return aggregates
+        return super()._build_grid_point_aggregates()
 
     def _iterate_grid_points(self, on_grid_point):
         """Opt-in q batching; stateful file paths retain upstream iteration."""

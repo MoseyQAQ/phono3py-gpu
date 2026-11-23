@@ -44,6 +44,7 @@ def test_options(si, options):
 @pytest.mark.parametrize(
     "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
 )
+@pytest.mark.filterwarnings(r"error:.*\.extra is deprecated:DeprecationWarning")
 def test_hdf5(si, lbte, wte, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     ph = deepcopy(si)
@@ -58,23 +59,41 @@ def test_hdf5(si, lbte, wte, tmp_path, monkeypatch):
     ph.run_thermal_conductivity(
         **options, write_kappa=True, write_collision=lbte, write_LBTE_solution=False
     )
-    kappa = ph.thermal_conductivity.kappa.copy()
+    calc = ph.thermal_conductivity
+    expected = {"kappa": calc.kappa.copy()}
+    if wte:
+        for name in ("kappa_P_RTA", "kappa_C"):
+            expected[name] = getattr(calc, name).copy()
+        if lbte:
+            expected["kappa_P_exact"] = calc.kappa_P_exact.copy()
+        velocity_operator = calc._velocity_solver.velocity_operator.copy()
     file = next(tmp_path.glob("kappa*.hdf5"))
     with h5py.File(file) as handle:
-        assert handle["kappa"].shape == kappa[0].shape
-        np.testing.assert_allclose(handle["kappa"][:], kappa[0])
+        assert handle["kappa"].shape == expected["kappa"][0].shape
+        for name, values in expected.items():
+            np.testing.assert_allclose(handle[name][:], values[0])
         assert "gamma" in handle
         if wte:
-            assert "kappa_C" in handle
+            np.testing.assert_array_equal(
+                handle["velocity_operator"][:], velocity_operator
+            )
     if lbte:
         ph.init_phph_interaction()
         ph.run_thermal_conductivity(**options, read_collision="all")
     else:
         ph.init_phph_interaction()
         ph.run_thermal_conductivity(**options, read_gamma=True)
-    np.testing.assert_allclose(
-        ph.thermal_conductivity.kappa, kappa, rtol=1e-9, atol=1e-9
-    )
+    for name, values in expected.items():
+        np.testing.assert_allclose(
+            getattr(ph.thermal_conductivity, name), values, rtol=1e-9, atol=1e-9
+        )
+    if wte:
+        np.testing.assert_allclose(
+            ph.thermal_conductivity.velocity_operator,
+            velocity_operator,
+            rtol=1e-9,
+            atol=1e-9,
+        )
 
 
 @pytest.mark.parametrize("include_gamma", [True, False])

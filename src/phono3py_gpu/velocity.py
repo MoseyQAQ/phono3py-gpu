@@ -139,7 +139,6 @@ class GPUVelocitySolver(GroupVelocitySolver):
             return VelocityResult(
                 group_velocities=gv,
                 vm_by_vm=np.asarray(products),
-                extra={"velocity_operator": self.velocity_operator},
             )
         return VelocityResult(group_velocities=gv, gv_by_gv=np.asarray(products))
 

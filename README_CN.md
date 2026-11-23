@@ -10,10 +10,13 @@
 
 环境要求：
 
-- Python 3.11 或更新版本
+- Python >=3.11
+- phono3py >=4.11.0
+- phonopy >=4.11.0
+- phonors >=0.9.0
+- CuPy >=13.6（CUDA 11：<14）
 - NVIDIA GPU 及兼容的驱动
 - 与 CuPy 安装包匹配的 CUDA Toolkit
-- Git 和 C/C++ 编译器，用于构建依赖
 
 先根据 CUDA 环境选择**一个**安装选项：
 
@@ -30,8 +33,6 @@ git clone https://github.com/MoseyQAQ/phono3py-gpu.git
 cd phono3py-gpu
 pip3 install '.[cuda12]'
 ```
-
-安装时从固定的 Git 提交构建 phono3py 和 phonopy。这两个版本已与 PyPI 发布的 phonors 0.8.0 一起验证，具体提交见 [pyproject.toml](pyproject.toml)。
 
 若已有兼容的 CuPy，改用 `pip3 install .` 即可。
 
