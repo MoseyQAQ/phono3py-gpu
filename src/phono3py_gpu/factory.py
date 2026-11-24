@@ -21,15 +21,20 @@ from phono3py.conductivity.kappa_solvers import LBTEKappaSolver
 from phono3py.phonon3.collision_matrix import CollisionMatrix
 from phono3py.phonon3.interaction import Interaction
 
+from phono3py_gpu._wte import GPUWignerLBTEKappaSolver, GPUWignerRTAKappaSolver
 from phono3py_gpu.backend import batch_size, cupy, report_devices
-from phono3py_gpu.batching import collision_layout, compute_q_batch
+from phono3py_gpu.batching import compute_q_batch
 from phono3py_gpu.collision import create_collision_matrix_kernel
 from phono3py_gpu.harmonic import prepare_phonons
 from phono3py_gpu.interaction import InteractionKernel
-from phono3py_gpu.kappa import GPURTAKappaSolver, make_wigner_lbte, make_wigner_rta
+from phono3py_gpu.kappa import GPURTAKappaSolver
 from phono3py_gpu.multigpu import devices
 from phono3py_gpu.multigpu import iterate as iterate_multi_gpu
-from phono3py_gpu.scattering import GPUCollisionSolver, GPUScatteringSolver
+from phono3py_gpu.scattering import (
+    GPUCollisionSolver,
+    GPUScatteringSolver,
+    collision_layout,
+)
 from phono3py_gpu.velocity import GPUHeatCapacitySolver, GPUVelocitySolver
 
 
@@ -187,7 +192,7 @@ class GPULBTECalculator(GPUCalculatorMixin, LBTECalculator):
                 self._pp.delete_interaction_strength()
 
 
-def _validate_wte(interaction, config, wte):
+def _validate_wte(interaction, wte):
     if wte and len(interaction.band_indices) != 3 * len(interaction.primitive):
         raise ValueError("WTE requires every phonon branch, as in phono3py-wte.")
 
@@ -201,7 +206,7 @@ def make_rta(
     cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
-    _validate_wte(interaction, config, wte)
+    _validate_wte(interaction, wte)
     kappa_settings = build_rta_kappa_settings(interaction, config)
     scattering_solver = GPUScatteringSolver(
         interaction,
@@ -229,7 +234,7 @@ def make_rta(
     )
     cv_solver = GPUHeatCapacitySolver(interaction, kappa_settings.temperatures)
     kappa_solver = (
-        make_wigner_rta(
+        GPUWignerRTAKappaSolver(
             kappa_settings,
             interaction.phonons.frequencies,
             interaction.primitive.volume,
@@ -270,7 +275,7 @@ def make_lbte(
     cupy().cuda.Device(devices()[0]).use()
     harmonic, f, e = prepare_phonons(interaction)
     engine = InteractionKernel(interaction, f, e)
-    _validate_wte(interaction, config, wte)
+    _validate_wte(interaction, wte)
     kappa_settings = build_lbte_kappa_settings(interaction, config)
     grid_point_indices = _get_lbte_grid_point_indices(
         kappa_settings.grid_points, config.grid_points
@@ -321,7 +326,7 @@ def make_lbte(
     )
     cv_solver = GPUHeatCapacitySolver(interaction, kappa_settings.temperatures)
     kappa_solver = (
-        make_wigner_lbte(
+        GPUWignerLBTEKappaSolver(
             colmat_kernel,
             kappa_settings,
             frequencies,

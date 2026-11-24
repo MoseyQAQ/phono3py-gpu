@@ -8,10 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from phono3py.conductivity.build_components import KappaSettings
 from phono3py.conductivity.collision_matrix_kernel import CollisionMatrixKernel
-from phono3py.conductivity.grid_point_data import (
-    GridPointAggregates,
-    compute_effective_gamma,
-)
+from phono3py.conductivity.grid_point_data import GridPointAggregates
 from phono3py.conductivity.lbte_collision_solver import LBTECollisionResult
 from phono3py.conductivity.utils import (
     log_kappa_header,
@@ -19,6 +16,9 @@ from phono3py.conductivity.utils import (
     log_sigma_header,
 )
 from phonopy.physical_units import get_physical_units
+
+from phono3py_gpu.backend import cupy, host
+from phono3py_gpu.kappa import effective_gamma
 
 # Threshold in THz below which two modes are considered degenerate and treated
 # as a population (diagonal) term instead of a coherence (off-diagonal) term.
@@ -43,7 +43,23 @@ def _get_conversion_factor_WTE(volume: float) -> float:
     return (u.THz * u.Angstrom) ** 2 * u.EV * u.Hbar / (volume * u.Angstrom**3)
 
 
-class WignerRTAKappaSolver:
+def pair_contributions(f, g, cv, vv, cutoff, conversion):
+    """WTE mode pairs; g is a half width in THz, as in phono3py.gamma."""
+    cp = cupy()
+    f, g, cv, vv = (cp.asarray(x) for x in (f, g, cv, vv))
+    omega = f * get_physical_units().THzToEv
+    width = g * 2 * get_physical_units().THzToEv
+    total = width[..., :, None] + width[..., None, :]
+    delta = omega[:, None] - omega[None, :]
+    denom = delta**2 + total**2 / 4
+    c = cv / cp.where(omega > 0, omega, 1)
+    pref = (omega[:, None] + omega[None, :]) * (c[..., :, None] + c[..., None, :]) / 4
+    valid = (f[:, None] > cutoff) & (f[None, :] > cutoff) & (denom != 0)
+    scalar = cp.where(valid, pref * total / 2 / cp.where(denom != 0, denom, 1), 0)
+    return scalar[..., None] * vv * conversion
+
+
+class GPUWignerRTAKappaSolver:
     """Kappa solver for the Wigner transport equation (WTE).
 
     Decomposes kappa into a population term (kappa_P_RTA) and a coherence
@@ -81,63 +97,11 @@ class WignerRTAKappaSolver:
         self._mode_kappa_C: NDArray[np.double] | None = None
         self.velocity_operator: NDArray[np.cdouble] | None = None
 
-    def _get_pair_contribution(
-        self,
-        *,
-        freq_s1: float,
-        freq_s2: float,
-        g_s1: float,
-        g_s2: float,
-        cv_s1: float,
-        cv_s2: float,
-        gv_by_gv_s1s2: NDArray[np.cdouble],
-        THzToEv: float,
-    ) -> tuple[NDArray[np.double], bool] | None:
-        """Return the kappa contribution of a (s1, s2) mode pair.
-
-        Returns None when the contribution is identically zero.
-
-        Returns
-        -------
-        (contribution, is_population) or None
-            contribution : (6,) real array
-            is_population : True when the pair is treated as a population
-                            term (|freq_s1 - freq_s2| <
-                            DEGENERATE_FREQUENCY_THRESHOLD_THZ).
-
-        """
-        hbar_omega_s1 = freq_s1 * THzToEv
-        hbar_omega_s2 = freq_s2 * THzToEv
-        hbar_gamma_s1 = 2.0 * g_s1 * THzToEv
-        hbar_gamma_s2 = 2.0 * g_s2 * THzToEv
-
-        gamma_sum = hbar_gamma_s1 + hbar_gamma_s2
-        delta_omega = hbar_omega_s1 - hbar_omega_s2
-        denominator = delta_omega**2 + 0.25 * gamma_sum**2
-        if denominator == 0.0:
-            return None
-        lorentzian_div_hbar = (0.5 * gamma_sum) / denominator
-
-        prefactor = (
-            0.25
-            * (hbar_omega_s1 + hbar_omega_s2)
-            * (cv_s1 / hbar_omega_s1 + cv_s2 / hbar_omega_s2)
-        )
-        contribution = (
-            gv_by_gv_s1s2
-            * prefactor
-            * lorentzian_div_hbar
-            * self._conversion_factor_WTE
-        ).real
-        is_population = abs(freq_s1 - freq_s2) < DEGENERATE_FREQUENCY_THRESHOLD_THZ
-        return contribution, is_population
-
     def finalize(self, aggregates: GridPointAggregates) -> None:
         """Compute mode kappa (P + C) and kappa from aggregated data."""
         assert aggregates.vm_by_vm is not None
 
         num_sigma, num_temp, num_gp, num_band = aggregates.gamma.shape
-        self._kappa_P = np.zeros((num_sigma, num_temp, 6), dtype="double", order="C")
         self._mode_kappa_P = np.zeros(
             (num_sigma, num_temp, num_gp, num_band, 6), dtype="double", order="C"
         )
@@ -154,58 +118,24 @@ class WignerRTAKappaSolver:
         self._kappa_C = np.sum(self._mode_kappa_C, axis=(2, 3, 4)) / num_mesh_points
 
     def _compute_mode_kappa(self, aggregates: GridPointAggregates) -> None:
-        """Compute mode kappa P and C at all grid points."""
-        assert aggregates.vm_by_vm is not None
-
-        vm_by_vm = aggregates.vm_by_vm
-        cv = aggregates.mode_heat_capacities
-        gamma_eff = compute_effective_gamma(aggregates)
-        num_sigma, num_temp, num_gp, num_band = gamma_eff.shape
-        THzToEv = get_physical_units().THzToEv
-
-        for i_gp in range(num_gp):
-            gp = self._kappa_settings.grid_points[i_gp]
-            frequencies = self._frequencies[gp]
-            num_band = len(frequencies)
-
-            mode_kappa_P = np.zeros((num_sigma, num_temp, num_band, 6), dtype="double")
-            mode_kappa_C = np.zeros(
-                (num_sigma, num_temp, num_band, num_band, 6), dtype="double"
+        cp = cupy()
+        gamma = effective_gamma(aggregates)
+        for i, gp in enumerate(self._kappa_settings.grid_points):
+            f = cp.asarray(self._frequencies[gp])
+            pair = pair_contributions(
+                f,
+                gamma[:, :, i],
+                aggregates.mode_heat_capacities[:, i],
+                aggregates.vm_by_vm[i],
+                self._kappa_settings.cutoff_frequency,
+                self._conversion_factor_WTE,
+            ).real
+            population = (
+                cp.abs(f[:, None] - f[None, :]) < DEGENERATE_FREQUENCY_THRESHOLD_THZ
             )
-
-            for j in range(num_sigma):
-                for k in range(num_temp):
-                    g = gamma_eff[j, k, i_gp]
-                    cv_k = cv[k, i_gp]
-                    for s1 in range(num_band):
-                        freq_s1 = frequencies[s1]
-                        if freq_s1 <= self._kappa_settings.cutoff_frequency:
-                            continue
-                        for s2 in range(num_band):
-                            freq_s2 = frequencies[s2]
-                            if freq_s2 <= self._kappa_settings.cutoff_frequency:
-                                continue
-                            pair = self._get_pair_contribution(
-                                freq_s1=freq_s1,
-                                freq_s2=freq_s2,
-                                g_s1=g[s1],
-                                g_s2=g[s2],
-                                cv_s1=cv_k[s1],
-                                cv_s2=cv_k[s2],
-                                gv_by_gv_s1s2=vm_by_vm[i_gp, s1, s2],
-                                THzToEv=THzToEv,
-                            )
-                            if pair is None:
-                                continue
-                            contribution, is_population = pair
-                            if is_population:
-                                mode_kappa_P[j, k, s1] += 0.5 * contribution
-                                mode_kappa_P[j, k, s2] += 0.5 * contribution
-                            else:
-                                mode_kappa_C[j, k, s1, s2] += contribution
-
-            self._mode_kappa_P[:, :, i_gp, :, :] = mode_kappa_P
-            self._mode_kappa_C[:, :, i_gp, :, :, :] = mode_kappa_C
+            p = pair * population[..., None]
+            self._mode_kappa_P[:, :, i] = host((p.sum(axis=-2) + p.sum(axis=-3)) / 2)
+            self._mode_kappa_C[:, :, i] = host(pair * (~population)[..., None])
 
     @property
     def kappa(self) -> NDArray[np.double] | None:
@@ -323,7 +253,7 @@ class WignerRTAKappaSolver:
         }
 
 
-class WignerLBTEKappaSolver:
+class GPUWignerLBTEKappaSolver:
     """LBTE kappa solver with added Wigner coherence (C) term.
 
     Composes a CollisionMatrixKernel for the standard LBTE solve (P-term) and
@@ -535,86 +465,29 @@ class WignerLBTEKappaSolver:
         i_sigma: int,
         i_temp: int,
     ) -> None:
-        """Compute the Wigner coherence (C) term for one (sigma, temp) pair."""
+        cp = cupy()
         if self._mode_kappa_C is None:
             return
-        vm_by_vm = aggregates.vm_by_vm
-        mode_cv = aggregates.mode_heat_capacities
-        if vm_by_vm is None or mode_cv is None:
-            return
-
-        THzToEv = get_physical_units().THzToEv
-        num_ir = len(self._kappa_settings.grid_points)
-        num_band0 = len(self._kappa_settings.band_indices)
-        num_band = self._frequencies.shape[1]
-
-        for i_gp in range(num_ir):
-            gp = int(self._kappa_settings.grid_points[i_gp])
-            g = self._solver.get_main_diagonal(i_gp, i_sigma, i_temp) * 2.0
-            frequencies = self._frequencies[gp]
-            cv = mode_cv[i_temp, i_gp, :]
-            gv_by_gv_op = vm_by_vm[i_gp]
-
-            for s1 in range(num_band0):
-                for s2 in range(num_band):
-                    contrib = self._compute_pair_contribution(
-                        freq_s1=float(frequencies[s1]),
-                        freq_s2=float(frequencies[s2]),
-                        linewidth_s1=float(g[s1]),
-                        linewidth_s2=float(g[s2]),
-                        cv_s1=float(cv[s1]),
-                        cv_s2=float(cv[s2]),
-                        gv_by_gv_s1s2=gv_by_gv_op[s1, s2, :],
-                        THzToEv=THzToEv,
-                    )
-                    if contrib is None:
-                        continue
-                    self._mode_kappa_C[i_sigma, i_temp, i_gp, s1, s2] = contrib
-
-        num_mesh_points = int(np.prod(self._kappa_settings.mesh_numbers))
-        self._kappa_C[i_sigma, i_temp] = (
-            self._mode_kappa_C[i_sigma, i_temp].sum(axis=(0, 1, 2)) / num_mesh_points
-        ).real
-
-    def _compute_pair_contribution(
-        self,
-        *,
-        freq_s1: float,
-        freq_s2: float,
-        linewidth_s1: float,
-        linewidth_s2: float,
-        cv_s1: float,
-        cv_s2: float,
-        gv_by_gv_s1s2: NDArray[np.cdouble],
-        THzToEv: float,
-    ) -> NDArray[np.cdouble] | None:
-        """Return coherence contribution for a single (s1, s2) pair.
-
-        Returns None when the pair is degenerate or below the cutoff frequency.
-
-        """
-        cutoff = self._kappa_settings.cutoff_frequency
-        if freq_s1 <= cutoff or freq_s2 <= cutoff:
-            return None
-        if np.abs(freq_s1 - freq_s2) <= DEGENERATE_FREQUENCY_THRESHOLD_THZ:
-            return None
-
-        hbar_omega_s1 = freq_s1 * THzToEv
-        hbar_omega_s2 = freq_s2 * THzToEv
-        hbar_gamma_s1 = linewidth_s1 * THzToEv
-        hbar_gamma_s2 = linewidth_s2 * THzToEv
-
-        gamma_sum = hbar_gamma_s1 + hbar_gamma_s2
-        delta_omega = hbar_omega_s1 - hbar_omega_s2
-        denominator = delta_omega**2 + 0.25 * gamma_sum**2
-        lorentzian_div_hbar = (0.5 * gamma_sum) / denominator
-        prefactor = (
-            0.25
-            * (hbar_omega_s1 + hbar_omega_s2)
-            * (cv_s1 / hbar_omega_s1 + cv_s2 / hbar_omega_s2)
+        total = cp.zeros(6)
+        for i, gp in enumerate(self._kappa_settings.grid_points):
+            f = cp.asarray(self._frequencies[gp])
+            g = self._solver.get_main_diagonal(i, i_sigma, i_temp)
+            pair = pair_contributions(
+                f,
+                g,
+                aggregates.mode_heat_capacities[i_temp, i],
+                aggregates.vm_by_vm[i],
+                self._kappa_settings.cutoff_frequency,
+                self._conversion_factor_WTE,
+            )
+            pair *= (
+                cp.abs(f[:, None] - f[None, :]) > DEGENERATE_FREQUENCY_THRESHOLD_THZ
+            )[..., None]
+            self._mode_kappa_C[i_sigma, i_temp, i] = host(pair)
+            total += pair.sum(axis=(0, 1)).real
+        self._kappa_C[i_sigma, i_temp] = host(
+            total / int(np.prod(self._kappa_settings.mesh_numbers))
         )
-        factor = lorentzian_div_hbar * self._conversion_factor_WTE
-        return gv_by_gv_s1s2 * prefactor * factor
 
     def _log_wigner_kappa_at(self, i_sigma: int, i_temp: int) -> None:
         """Print Wigner LBTE kappa for one (sigma, temperature) pair."""

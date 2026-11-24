@@ -212,8 +212,8 @@ class GPUFC3Transform:
     """Cache a snapshot of FC3 and BZ phases on the current CuPy device.
 
     Input FC3/mappings must remain unchanged for this object's lifetime.
-    ``transform`` returns atom-first complex128 tensors on the device. Calls are
-    synchronous and bounded to ``batch_size`` triplets in the interaction path.
+    ``transform`` returns atom-first complex128 tensors on the device.
+    Triplet batches are bounded by the caller.
     """
 
     def __init__(
@@ -227,20 +227,15 @@ class GPUFC3Transform:
         all_shortest,
         qpoints,
         make_r0_average=True,
-        batch_size=128,
     ):
         import cupy as cp
 
         if fc3.dtype != np.float64:
             raise TypeError("GPU FC3 transform requires float64 force constants.")
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive.")
-        self.batch_size = batch_size
         self.na, self.ns = len(p2s), len(s2p)
         self.average = bool(make_r0_average)
         self.pool = cp.cuda.MemoryPool()
         self.device = cp.cuda.Device().id
-        self.timings = dict(transform=0.0, projection=0.0, calls=0)
         start = time.perf_counter()
         compact = fc3.shape[0] != fc3.shape[1]
         groups = [np.flatnonzero(s2p == p) for p in p2s]

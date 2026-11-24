@@ -10,23 +10,14 @@ from phono3py.conductivity.lbte_collision_solver import LBTECollisionResult
 
 from phono3py_gpu.backend import cupy, host, kernel
 from phono3py_gpu.integration import sigma_weights
-from phono3py_gpu.scattering import average_initial, linewidth_detail, sigma_groups
-
-
-def collision_layout(solver):
-    """Return target GR points, rotations and one-q collision row shape."""
-    collision, pp = solver._collision, solver._pp
-    nb0, nb = len(pp.band_indices), solver.engine.nb
-    if collision._is_reducible_collision_matrix:
-        targets = np.arange(np.prod(pp.mesh_numbers))[:, None]
-        return targets, np.eye(3)[None], (nb0, len(targets), nb), 1
-    targets = collision._rot_grid_points
-    return (
-        targets,
-        collision._rotations_cartesian,
-        (nb0, 3, len(targets), nb, 3),
-        3,
-    )
+from phono3py_gpu.scattering import (
+    add_collision_rows,
+    average_initial,
+    collision_layout,
+    linewidth_detail,
+    reduce_collision,
+    sigma_groups,
+)
 
 
 def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
@@ -67,7 +58,7 @@ def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
             if collision:
                 solver.retain_pp = original_retain_pp
         return answers
-    nq, nb0, nb = len(grid_points), len(pp.band_indices), engine.nb
+    nq, nb0 = len(grid_points), len(pp.band_indices)
     ns, nt = len(solver._sigmas), len(solver._temperatures)
     triplets, multiplicities, maps, swaps = [], [], [], []
     offset = 0
@@ -167,40 +158,22 @@ def compute_q_batch(solver, grid_points, collision=False, *, last_batch=True):
                     )
                     if not collision or temperature <= 0:
                         continue
-                    reduced = cp.empty((2, len(selected), nb0, nb))
-                    kernel("scattering.cu", "collision_reduce")(
-                        ((reduced.size + 127) // 128,),
-                        (128,),
-                        (
-                            reduced,
-                            strength,
-                            g[2],
-                            solver._inv_sinh[k],
-                            tp,
-                            np.int32(len(selected)),
-                            np.int32(nb0),
-                            np.int32(nb),
-                            np.float64(solver._collision.unit_conversion_factor),
-                        ),
+                    reduced = reduce_collision(
+                        strength,
+                        g,
+                        solver._inv_sinh[k],
+                        tp,
+                        solver._collision.unit_conversion_factor,
                     )
-                    kernel("scattering.cu", "collision_rows")(
-                        ((row[j - group.start, k].size + 127) // 128,),
-                        (128,),
-                        (
-                            row[j - group.start, k],
-                            reduced,
-                            mapped,
-                            swapped,
-                            rotations,
-                            np.int32(len(selected)),
-                            np.int32(nb0),
-                            np.int32(nb),
-                            np.int32(targets.shape[0]),
-                            np.int32(targets.shape[1]),
-                            np.int32(start),
-                            np.int32(nc),
-                            np.int32(nq),
-                        ),
+                    add_collision_rows(
+                        row[j - group.start, k],
+                        reduced,
+                        mapped,
+                        swapped,
+                        rotations,
+                        start=start,
+                        num_cartesian=nc,
+                        num_q=nq,
                     )
                 if retain_pp and j == ns - 1:
                     # Preserve the upstream final-q pp state without retaining

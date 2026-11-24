@@ -64,6 +64,72 @@ def linewidth_detail(engine, triplets, strength, g, temperature, occupation=None
     return result
 
 
+def collision_layout(solver):
+    """Return target GR points, rotations and one-q collision row shape."""
+    collision, pp = solver._collision, solver._pp
+    nb0, nb = len(pp.band_indices), solver.engine.nb
+    if collision._is_reducible_collision_matrix:
+        targets = np.arange(np.prod(pp.mesh_numbers))[:, None]
+        return targets, np.eye(3)[None], (nb0, len(targets), nb), 1
+    targets = collision._rot_grid_points
+    return (
+        targets,
+        collision._rotations_cartesian,
+        (nb0, 3, len(targets), nb, 3),
+        3,
+    )
+
+
+def reduce_collision(strength, g, inv_sinh, triplets, unit):
+    """归约两个散射方向，返回 (2, triplet, band0, band) 张量。"""
+    cp = cupy()
+    nt, nb0, nb = strength.shape[:3]
+    reduced = cp.empty((2, nt, nb0, nb))
+    kernel("scattering.cu", "collision_reduce")(
+        ((reduced.size + 127) // 128,),
+        (128,),
+        (
+            reduced,
+            cp.ascontiguousarray(strength),
+            g[2],
+            inv_sinh,
+            cp.asarray(triplets),
+            np.int32(nt),
+            np.int32(nb0),
+            np.int32(nb),
+            np.float64(unit),
+        ),
+    )
+    return reduced
+
+
+def add_collision_rows(
+    row, reduced, triplet_map, swapped, rotations, *, start, num_cartesian, num_q
+):
+    """按 triplet 映射和笛卡尔旋转，将归约结果累加到 collision 行。"""
+    nt, nb0, nb = reduced.shape[1:]
+    ni, nr = triplet_map.shape[-2:]
+    kernel("scattering.cu", "collision_rows")(
+        ((row.size + 127) // 128,),
+        (128,),
+        (
+            row,
+            reduced,
+            triplet_map,
+            swapped,
+            rotations,
+            np.int32(nt),
+            np.int32(nb0),
+            np.int32(nb),
+            np.int32(ni),
+            np.int32(nr),
+            np.int32(start),
+            np.int32(num_cartesian),
+            np.int32(num_q),
+        ),
+    )
+
+
 def sigma_groups(engine, sigmas, row_bytes=0, reuse=True):
     """Bound extra sigma weights and collision rows to a quarter of free memory."""
     width = 1
@@ -202,7 +268,8 @@ class GPUScatteringSolver(RTAScatteringSolver):
         triplets, multiplicities = pp.get_triplets_at_q()[:2]
         ns, nt, nb0 = len(self._sigmas), len(self._temperatures), len(pp.band_indices)
         gamma = cp.zeros((ns, nt, nb0))
-        normal, umklapp = cp.zeros_like(gamma), cp.zeros_like(gamma)
+        if self._is_N_U:
+            normal, umklapp = cp.zeros_like(gamma), cp.zeros_like(gamma)
         detail = None
         if self._is_gamma_detail:
             detail = np.zeros((nt, len(triplets), nb0, self.engine.nb, self.engine.nb))
@@ -228,9 +295,10 @@ class GPUScatteringSolver(RTAScatteringSolver):
                 j += group.start
                 end = start + len(selected)
                 w = cp.asarray(multiplicities[start:end])
-                is_normal = cp.asarray(
-                    np.all(pp.bz_grid.addresses[selected].sum(axis=1) == 0, axis=1)
-                )
+                if self._is_N_U:
+                    is_normal = cp.asarray(
+                        np.all(pp.bz_grid.addresses[selected].sum(axis=1) == 0, axis=1)
+                    )
                 if average is not None and j == 0:
                     average[block] += (strength.sum(axis=(2, 3)) * w[:, None]).sum(
                         axis=0
@@ -260,8 +328,10 @@ class GPUScatteringSolver(RTAScatteringSolver):
                     saved_zero[start:end, block] = host(zero)
         if self._store_pp:
             pp.set_interaction_strength(saved, g_zero=saved_zero)
-        for array in (gamma, normal, umklapp):
-            average_initial(array, pp, grid_point)
+        average_initial(gamma, pp, grid_point)
+        if self._is_N_U:
+            average_initial(normal, pp, grid_point)
+            average_initial(umklapp, pp, grid_point)
         self._gamma_N = host(normal) if self._is_N_U else None
         self._gamma_U = host(umklapp) if self._is_N_U else None
         self._gamma_detail_at_q = detail
@@ -300,17 +370,9 @@ class GPUCollisionSolver(LBTECollisionSolver):
         collision.set_grid_point(grid_point)
         triplets, multiplicities = pp.get_triplets_at_q()[:2]
         gp2tp, _, swapped = collision._get_gp2tp_map()
-        reducible = collision._is_reducible_collision_matrix
         nb0, nb = len(pp.band_indices), self.engine.nb
         ns, nt = len(self._sigmas), len(self._temperatures)
-        if reducible:
-            targets = np.arange(len(gp2tp))[:, None]
-            rotations = np.eye(3)[None]
-            rowshape = (nb0, len(targets), nb)
-        else:
-            targets = collision._rot_grid_points
-            rotations = collision._rotations_cartesian
-            rowshape = (nb0, 3, len(targets), nb, 3)
+        targets, rotations, rowshape, nc = collision_layout(self)
         gamma = cp.zeros((ns, nt, nb0))
         rows = np.zeros((ns, nt, *rowshape))
         average = cp.zeros(nb0) if self._is_full_pp else None
@@ -359,41 +421,18 @@ class GPUCollisionSolver(LBTECollisionSolver):
                     )
                     if temperature <= 0:
                         continue
-                    width = strength.shape[1]
-                    reduced = cp.empty((2, len(selected), width, nb))
-                    kernel("scattering.cu", "collision_reduce")(
-                        ((reduced.size + 127) // 128,),
-                        (128,),
-                        (
-                            reduced,
-                            cp.ascontiguousarray(strength),
-                            g[2],
-                            self._inv_sinh[k],
-                            cp.asarray(selected),
-                            np.int32(len(selected)),
-                            np.int32(width),
-                            np.int32(nb),
-                            np.float64(unit),
-                        ),
+                    reduced = reduce_collision(
+                        strength, g, self._inv_sinh[k], selected, unit
                     )
-                    kernel("scattering.cu", "collision_rows")(
-                        ((row[j - group.start, k, block].size + 127) // 128,),
-                        (128,),
-                        (
-                            row[j - group.start, k, block],
-                            reduced,
-                            target_triplets,
-                            target_swapped,
-                            device_rotations,
-                            np.int32(len(selected)),
-                            np.int32(width),
-                            np.int32(nb),
-                            np.int32(targets.shape[0]),
-                            np.int32(targets.shape[1]),
-                            np.int32(start),
-                            np.int32(1 if reducible else 3),
-                            np.int32(1),
-                        ),
+                    add_collision_rows(
+                        row[j - group.start, k, block],
+                        reduced,
+                        target_triplets,
+                        target_swapped,
+                        device_rotations,
+                        start=start,
+                        num_cartesian=nc,
+                        num_q=1,
                     )
                 if self.retain_pp and j == ns - 1:
                     saved[start:end, block] = host(strength)

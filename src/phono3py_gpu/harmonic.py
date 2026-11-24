@@ -65,10 +65,7 @@ class Harmonic:
         cp = cupy()
         q = cp.asarray(qpoints, dtype=cp.float64).reshape(-1, 3)
         n = len(q)
-        result = cp.zeros(
-            (n, 3, self.nb, self.nb) if derivative else (n, self.nb, self.nb),
-            dtype=cp.complex128,
-        )
+        shape = (n, 3, self.nb, self.nb) if derivative else (n, self.nb, self.nb)
         phases = self._phase(q, derivative)
         base_phases = self._phase(q) if derivative and self.is_wang else phases
         nac, dnac = self._wang(q, q_direction) if self.is_wang else (None, None)
@@ -89,7 +86,7 @@ class Harmonic:
                 extra = grouped.sum(axis=-1)[..., None, None] * nac
                 block += extra.transpose(0, 1, 3, 2, 4)
             block /= mass[None, :, None, :, None]
-        result = block.reshape(result.shape)
+        result = block.reshape(shape)
         if self.is_gl:
             result += self._gonze(q, derivative, q_direction)
         return (result + result.swapaxes(-1, -2).conj()) * 0.5
