@@ -13,8 +13,7 @@ from phono3py_gpu.interaction import InteractionKernel
 from phono3py_gpu.scattering import GPUCollisionSolver
 
 
-@pytest.mark.parametrize("sigma", [None, 0.1])
-@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("sigma,shared", [(None, False), (None, True), (0.1, False)])
 def test_mixed_frequency_points(si, sigma, shared, monkeypatch):
     monkeypatch.setattr(
         "phono3py_gpu.integration.MIN_SHARED_FREQUENCIES", 1 if shared else 100

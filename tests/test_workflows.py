@@ -75,12 +75,19 @@ def register_cpu_wte():
     )
 
 
+@pytest.fixture(scope="module")
+def conductivity_references():
+    return {}
+
+
 @pytest.mark.parametrize(
     "lbte,wte", [(False, False), (True, False), (False, True), (True, True)]
 )
 @pytest.mark.parametrize("sigmas", [[None], [0.1], [None, 0.1, 0.2]])
 @pytest.mark.parametrize("q_batch,streamed", [(1, False), (4, False), (4, True)])
-def test_conductivity(si, lbte, wte, sigmas, q_batch, streamed, monkeypatch):
+def test_conductivity(
+    si, lbte, wte, sigmas, q_batch, streamed, monkeypatch, conductivity_references
+):
     if streamed:
         # Exercise multiple initial-band tiles on the small CPU reference.
         monkeypatch.setattr("phono3py_gpu.interaction.MIN_STREAMED_BANDS", 1)
@@ -90,15 +97,19 @@ def test_conductivity(si, lbte, wte, sigmas, q_batch, streamed, monkeypatch):
     monkeypatch.setenv("PHONO3PY_GPU_Q_BATCH_SIZE", str(q_batch))
     if wte:
         register_cpu_wte()
-    results = []
-    for gpu in (False, True):
+    key = (lbte, wte, tuple(sigmas))
+    for use_gpu in (False, True):
+        if not use_gpu and key in conductivity_references:
+            continue
         ph = deepcopy(si)
         ph.mesh_numbers = [3, 3, 3]
         ph.sigmas = sigmas
         ph.sigma_cutoff = 3.0
         ph.init_phph_interaction()
         transport = (
-            ("WTE-GPU" if wte else "GPU") if gpu else ("reference-wte" if wte else None)
+            ("WTE-GPU" if wte else "GPU")
+            if use_gpu
+            else ("reference-wte" if wte else None)
         )
         ph.run_thermal_conductivity(
             is_LBTE=lbte,
@@ -109,8 +120,22 @@ def test_conductivity(si, lbte, wte, sigmas, q_batch, streamed, monkeypatch):
             is_isotope=True,
             boundary_mfp=100.0,
         )
-        results.append(ph.thermal_conductivity)
-    cpu, gpu = results
+        calc = ph.thermal_conductivity
+        if use_gpu:
+            gpu = calc
+        else:
+            names = ["gamma", "gamma_isotope", "kappa"]
+            if wte:
+                names.extend(["kappa_P_RTA", "kappa_C"])
+                if lbte:
+                    names.append("kappa_P_exact")
+            if lbte:
+                names.append("collision_eigenvalues")
+            cpu = {name: getattr(calc, name).copy() for name in names}
+            if not lbte:
+                cpu["gamma_N_U"] = tuple(x.copy() for x in calc.get_gamma_N_U())
+            conductivity_references[key] = cpu
+    cpu = conductivity_references[key]
     visible = devices()
     groups = (len(gpu.grid_points) + q_batch - 1) // q_batch
     active = visible[:groups] if not streamed else visible[:1]
@@ -122,27 +147,30 @@ def test_conductivity(si, lbte, wte, sigmas, q_batch, streamed, monkeypatch):
         assert gpu.q_batch_stats["max_q_per_launch"] == 1
     elif q_batch > 1:
         assert gpu.q_batch_stats["max_q_per_launch"] > 1
-    np.testing.assert_allclose(gpu.gamma, cpu.gamma, rtol=1e-7, atol=1e-11)
+    np.testing.assert_allclose(gpu.gamma, cpu["gamma"], rtol=1e-7, atol=1e-11)
     np.testing.assert_allclose(
-        gpu.gamma_isotope, cpu.gamma_isotope, rtol=1e-7, atol=1e-11
+        gpu.gamma_isotope, cpu["gamma_isotope"], rtol=1e-7, atol=1e-11
     )
-    np.testing.assert_allclose(gpu.kappa, cpu.kappa, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(gpu.kappa, cpu["kappa"], rtol=1e-6, atol=1e-6)
     if wte:
         for name in ("kappa_P_RTA", "kappa_C"):
             np.testing.assert_allclose(
-                getattr(gpu, name), getattr(cpu, name), rtol=1e-6, atol=1e-6
+                getattr(gpu, name), cpu[name], rtol=1e-6, atol=1e-6
             )
         if lbte:
             np.testing.assert_allclose(
-                gpu.kappa_P_exact, cpu.kappa_P_exact, rtol=1e-6, atol=1e-6
+                gpu.kappa_P_exact, cpu["kappa_P_exact"], rtol=1e-6, atol=1e-6
             )
     if lbte:
         np.testing.assert_allclose(
-            gpu.collision_eigenvalues, cpu.collision_eigenvalues, rtol=1e-7, atol=1e-9
+            gpu.collision_eigenvalues,
+            cpu["collision_eigenvalues"],
+            rtol=1e-7,
+            atol=1e-9,
         )
     else:
         for actual, expected in zip(
-            gpu.get_gamma_N_U(), cpu.get_gamma_N_U(), strict=True
+            gpu.get_gamma_N_U(), cpu["gamma_N_U"], strict=True
         ):
             np.testing.assert_allclose(actual, expected, rtol=1e-7, atol=1e-11)
 
