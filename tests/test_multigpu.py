@@ -308,36 +308,40 @@ def test_partial_lbte_keeps_last_requested_row(si, monkeypatch):
         np.testing.assert_allclose(actual, reference, rtol=1e-9, atol=1e-13)
 
 
-@pytest.mark.parametrize("block", [32, 32, 256])
-def test_distributed_eigensolver(block):
+@pytest.mark.parametrize(
+    "blocks", [(32, 32), (256,)], ids=["consecutive-solves", "empty-shard"]
+)
+def test_distributed_eigensolver(blocks):
+    """连续求解复用 cuSOLVERMg 句柄，同时保留空设备分片的覆盖。"""
     from phono3py_gpu.eigensolver import DistributedEigh
 
     if cupy().cuda.runtime.getDeviceCount() < 2:
         pytest.skip("Two CUDA devices required.")
     rng = np.random.default_rng(820)
-    q, _ = np.linalg.qr(rng.normal(size=(131, 131)))
-    spectrum = np.linspace(-5, 8, 131)
-    spectrum[50] = 0
-    matrix = (q * spectrum) @ q.T
-    x = rng.normal(size=(131, 3))
-    solver = DistributedEigh(matrix, [0, 1], block=block)
-    try:
-        v = np.empty_like(matrix)
-        solver.write_vectors(v)
-        np.testing.assert_allclose(solver.values, np.sort(spectrum), atol=1e-11)
-        np.testing.assert_allclose(matrix @ v, v * solver.values, atol=1e-11)
-        np.testing.assert_allclose(v.T @ v, np.eye(131), atol=1e-11)
-        for method in (0, 1):
-            inverse = solver.inverse_values(1e-10, method)
-            expected = (v * inverse) @ v.T
-            np.testing.assert_allclose(
-                solver.solve(x, inverse), expected @ x, rtol=1e-10, atol=1e-10
-            )
-            result = np.empty_like(matrix)
-            solver.write_inverse(result, inverse)
-            np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10)
-    finally:
-        solver.close()
+    for block in blocks:
+        q, _ = np.linalg.qr(rng.normal(size=(131, 131)))
+        spectrum = np.linspace(-5, 8, 131)
+        spectrum[50] = 0
+        matrix = (q * spectrum) @ q.T
+        x = rng.normal(size=(131, 3))
+        solver = DistributedEigh(matrix, [0, 1], block=block)
+        try:
+            v = np.empty_like(matrix)
+            solver.write_vectors(v)
+            np.testing.assert_allclose(solver.values, np.sort(spectrum), atol=1e-11)
+            np.testing.assert_allclose(matrix @ v, v * solver.values, atol=1e-11)
+            np.testing.assert_allclose(v.T @ v, np.eye(131), atol=1e-11)
+            for method in (0, 1):
+                inverse = solver.inverse_values(1e-10, method)
+                expected = (v * inverse) @ v.T
+                np.testing.assert_allclose(
+                    solver.solve(x, inverse), expected @ x, rtol=1e-10, atol=1e-10
+                )
+                result = np.empty_like(matrix)
+                solver.write_inverse(result, inverse)
+                np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10)
+        finally:
+            solver.close()
 
 
 @pytest.mark.parametrize(

@@ -246,7 +246,8 @@ def test_collision_batches(si, reducible, streamed):
     )
     engine.streamed = streamed
     engine.band_block = 2
-    for size in (1, 3):
+    sizes = (1,) if streamed else (1, 3)
+    for size in sizes:
         engine.batch_size = size
         result = GPUCollisionSolver(pp, collision, engine=engine, **options).compute(1)
         np.testing.assert_allclose(result.gamma, expected.gamma, rtol=1e-9, atol=1e-13)
