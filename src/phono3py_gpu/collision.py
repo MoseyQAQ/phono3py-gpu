@@ -7,21 +7,36 @@ from phono3py.conductivity.collision_matrix_kernel import (
     IrreducibleCollisionMatrixKernel,
     ReducibleCollisionMatrixKernel,
 )
+from phono3py.phonon.degeneracy import average_over_degenerate_sets
 from phonopy.physical_units import get_physical_units
 
-from phono3py_gpu.backend import cupy, eigh, host, report_devices
+from phono3py_gpu.backend import cupy, eigh, host, kernel, report_devices
 from phono3py_gpu.integration import average_axis
 
+INPLACE_EIGH_BYTES = 256 * 2**20
 
-def eigh_collision(matrix):
-    """Diagonalize a host FP64 matrix using a single device matrix buffer."""
-    from cupy_backends.cuda.libs import cublas, cusolver
 
+def _upload_collision(matrix):
+    """Upload directly into column-major storage with bounded staging memory."""
     cp = cupy()
     n = len(matrix)
     vectors = cp.empty((n, n), dtype=cp.float64, order="F")
     for start in range(0, n, 256):
         vectors[start : start + 256] = cp.asarray(matrix[start : start + 256])
+    return vectors
+
+
+def eigh_collision(matrix):
+    """Diagonalize FP64 input, overwriting column-major device input in place."""
+    from cupy_backends.cuda.libs import cublas, cusolver
+
+    cp = cupy()
+    n = len(matrix)
+    vectors = (
+        cp.asfortranarray(matrix)
+        if isinstance(matrix, cp.ndarray)
+        else _upload_collision(matrix)
+    )
     values = cp.empty(n, dtype=cp.float64)
     info = cp.empty((), dtype=cp.int32)
     params = cusolver.createParams()
@@ -79,6 +94,66 @@ class GPUCollisionMixin:
             return self._pinv_solver
         return super()._get_colmat_solver()
 
+    def _prepare_collision_matrix(self):
+        if self._distributed:
+            return super()._prepare_collision_matrix()
+        if isinstance(self, IrreducibleCollisionMatrixKernel):
+            return self._get_ir_weights()
+        self._rotation_map = None
+        if self._kappa_settings.is_kappa_star:
+            self._rotation_map = self._get_rotation_map()
+            self._expand_local_values(self._ir_gr_grid_points, self._rotation_map)
+        if self._log_level:
+            print(
+                "- RTA values below are computed with the collision term "
+                "approximated by the\n"
+                "  diagonal elements of the collision matrix, not by the "
+                "imaginary part of the\n"
+                "  self-energy."
+            )
+        return self._get_collision_weights()
+
+    def _device_collision_matrix(self, s, t, weights):
+        """Prepare one sigma/temperature and retain its matrix for the solve."""
+        cp = cupy()
+        n = self._get_symmetrization_size()
+        source = self._collision_matrix[s, t].reshape(n, n)
+        flat = cp.asarray(source)
+        matrix = flat.reshape(self._collision_matrix.shape[2:])
+        ir = isinstance(self, IrreducibleCollisionMatrixKernel)
+        if not ir and self._rotation_map is not None:
+            self._expand_device_collisions(matrix, self._rotation_map)
+        groups = list(
+            self._iter_ir_degenerate_ids() if ir else self._iter_mesh_degenerate_ids()
+        )
+        for i, ids in groups:
+            average_axis(matrix[i], ids, 0)
+        for i, ids in groups:
+            target = matrix[:, :, :, i] if ir else matrix[:, :, i]
+            average_axis(target, ids, 3 if ir else 2)
+        # Add the diagonal after averaging so degenerate blocks keep their rates.
+        bands = cp.arange(matrix.shape[1])
+        if ir:
+            for i, diagonal, rotation in self._iter_ir_diagonal_entries(s, t):
+                matrix[i, bands, :, i, bands, :] += (
+                    cp.asarray(diagonal)[:, None, None] * cp.asarray(rotation)
+                )
+            w = cp.asarray(weights)
+            matrix *= (
+                w[:, None, None, None, None, None] * w[None, None, None, :, None, None]
+            )
+        else:
+            for i, ids in enumerate(self._gr_degenerate_ids):
+                diagonal = average_over_degenerate_sets(
+                    self._get_main_diagonal(i, s, t), ids, 0
+                )
+                matrix[i, bands, i, bands] += cp.asarray(diagonal)
+        kernel("collision.cu", "symmetrize_collision")(
+            ((flat.size + 255) // 256,), (256,), (flat, np.int32(n))
+        )
+        # A symmetric matrix's transpose provides column-major storage without a copy.
+        return flat.T if flat.nbytes >= INPLACE_EIGH_BYTES else flat
+
     def _average_collision_matrix_by_degeneracy(self):
         cp = cupy()
         ir = isinstance(self, IrreducibleCollisionMatrixKernel)
@@ -133,7 +208,14 @@ class GPUCollisionMixin:
         solver = self._get_colmat_solver()
         report = self._log_level
         for s, t in self._iter_sigma_temp():
+            if not self._distributed:
+                matrix = self._device_collision_matrix(s, t, weights)
             if self._kappa_settings.temperatures[t] <= 0:
+                if not self._distributed:
+                    self._collision_matrix[s, t] = host(matrix).reshape(
+                        self._collision_matrix.shape[2:]
+                    )
+                    del matrix
                 continue
             if report:
                 from phono3py_gpu.multigpu import devices
@@ -142,30 +224,34 @@ class GPUCollisionMixin:
                 note = " (cuSOLVERMg)" if self._distributed else ""
                 report_devices(f"{self._transport} global solve", ids, note)
                 report = False
+            if not self._distributed and isinstance(
+                self, ReducibleCollisionMatrixKernel
+            ):
+                # Reducible RTA reads the prepared diagonal, not the raw gamma.
+                target = self._collision_matrix[s, t].reshape(n, n)
+                target.flat[:: n + 1] = host(matrix.diagonal())
             self._set_kappa_RTA_at_step(s, t, weights)
             if self._distributed:
                 self._solve_distributed_step(s, t, solver, weights)
                 yield s, t
                 continue
-            matrix = self._collision_matrix[s, t].reshape(n, n)
             if solver == 7:
-                self._gpu_inverse = cp.linalg.pinv(cp.asarray(matrix), rcond=1e-15)
+                self._gpu_inverse = cp.linalg.pinv(matrix, rcond=1e-15)
                 stored = self._gpu_inverse
             else:
-                if matrix.nbytes >= 256 * 2**20:
+                if matrix.nbytes >= INPLACE_EIGH_BYTES:
                     self._gpu_eigenvalues, self._gpu_eigenvectors = eigh_collision(
                         matrix
                     )
                 else:
-                    self._gpu_eigenvalues, self._gpu_eigenvectors = eigh(
-                        cp.asarray(matrix)
-                    )
+                    self._gpu_eigenvalues, self._gpu_eigenvectors = eigh(matrix)
                 self._collision_eigenvalues[s, t] = host(self._gpu_eigenvalues)
                 stored = (
                     self._gpu_eigenvectors.T
                     if solver in (1, 2, 4, 5)
                     else self._gpu_eigenvectors
                 )
+            del matrix
             self._collision_matrix[s, t] = host(stored).reshape(
                 self._collision_matrix.shape[2:]
             )
@@ -301,6 +387,15 @@ class GPUIrreducibleCollisionKernel(
 
 
 class GPUReducibleCollisionKernel(GPUCollisionMixin, ReducibleCollisionMatrixKernel):
+    def _expand_device_collisions(self, matrix, rot_grid_points):
+        rotations = cupy().asarray(rot_grid_points)
+        for gp in self._ir_gr_grid_points:
+            multiplicity = np.count_nonzero(rot_grid_points[:, gp] == gp)
+            source = matrix[gp].copy() / multiplicity
+            matrix[gp] = 0
+            for r, mapping in enumerate(rot_grid_points):
+                matrix[mapping[gp]][:, rotations[r], :] += source
+
     def _expand_collisions(self, ir_gr_grid_points, rot_grid_points):
         """Expand collision rows on device using upstream integer rotation maps."""
         cp = cupy()

@@ -46,7 +46,7 @@ jobs:
       - name: Check wheel contents
         run: |
           python -m zipfile -l dist/*.whl > wheel-contents.txt
-          for kernel in interaction isotope scattering tetrahedron; do
+          for kernel in collision interaction isotope scattering tetrahedron; do
             grep -q "phono3py_gpu/kernels/${kernel}.cu" wheel-contents.txt
           done
           python -m zipfile -e dist/*.whl wheel-contents
